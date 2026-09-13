@@ -115,11 +115,7 @@ class RetellWebhookEndpointTests(unittest.TestCase):
                 "disconnection_reason": "user_hangup",
                 "transcript": "Cliente confirmo el recordatorio.",
                 "recording_url": "https://recordings.example/call.mp3",
-                "post_call_analysis_data": {
-                    "call_summary": "Recordatorio entregado.",
-                    "user_sentiment": "neutral",
-                    "call_successful": True,
-                },
+                "duration_ms": 118545,
             },
         }
         response = self.post_webhook(payload)
@@ -130,11 +126,11 @@ class RetellWebhookEndpointTests(unittest.TestCase):
         self.assertEqual(call.disconnect_reason, "user_hangup")
         self.assertEqual(call.transcript, "Cliente confirmo el recordatorio.")
         self.assertEqual(call.recording_url, "https://recordings.example/call.mp3")
-        self.assertEqual(call.summary, "Recordatorio entregado.")
-        self.assertEqual(call.sentiment, "neutral")
-        self.assertTrue(call.call_successful)
-        self.assertEqual(call.outcome, "VERIFIED_REMINDER_DELIVERED")
+        self.assertEqual(call.duration_ms, 118545)
         self.assertIsNotNone(call.ended_at)
+        # call_ended no trae analisis: sentimiento y resumen llegan en call_analyzed.
+        self.assertIsNone(call.sentiment)
+        self.assertIsNone(call.summary)
 
     def test_call_analyzed_updates_analysis_and_ended_at(self) -> None:
         response = self.post_webhook(
@@ -142,10 +138,15 @@ class RetellWebhookEndpointTests(unittest.TestCase):
                 "event": "call_analyzed",
                 "call": {
                     "call_id": "retell-call-123",
-                    "post_call_analysis_data": {
+                    "call_analysis": {
                         "call_summary": "Analisis posterior.",
-                        "user_sentiment": "calm_positive",
+                        "user_sentiment": "Positive",
                         "call_successful": True,
+                        "custom_analysis_data": {
+                            "identity_verified": True,
+                            "reminder_delivered": True,
+                            "call_outcome": "reschedule_pending_review",
+                        },
                     },
                 },
             }
@@ -154,8 +155,11 @@ class RetellWebhookEndpointTests(unittest.TestCase):
         call = self.refresh_call()
         self.assertEqual(response.status_code, 200)
         self.assertEqual(call.summary, "Analisis posterior.")
-        self.assertEqual(call.sentiment, "calm_positive")
+        self.assertEqual(call.sentiment, "Positive")
         self.assertTrue(call.call_successful)
+        self.assertTrue(call.right_party_verified)
+        self.assertTrue(call.reminder_delivered)
+        self.assertEqual(call.outcome, "RESCHEDULE_PENDING_REVIEW")
         self.assertIsNotNone(call.ended_at)
 
     def test_call_analyzed_replaces_raw_recording_with_scrubbed_version(self) -> None:
@@ -181,6 +185,30 @@ class RetellWebhookEndpointTests(unittest.TestCase):
         self.assertEqual(ended.status_code, 200)
         self.assertEqual(analyzed.status_code, 200)
         self.assertEqual(self.refresh_call().recording_url, "https://recordings.example/scrubbed.wav")
+
+    def test_call_analyzed_prefers_scrubbed_analysis_over_raw(self) -> None:
+        """Con PII scrubbing activo el resumen crudo trae el nombre real del cliente."""
+        response = self.post_webhook(
+            {
+                "event": "call_analyzed",
+                "call": {
+                    "call_id": "retell-call-123",
+                    "call_analysis": {
+                        "call_summary": "Llamada con Maria Lopez sobre su prestamo.",
+                        "user_sentiment": "Positive",
+                    },
+                    "scrubbed_call_analysis": {
+                        "call_summary": "Llamada con [person name 2] sobre su prestamo.",
+                        "user_sentiment": "Positive",
+                    },
+                },
+            }
+        )
+
+        call = self.refresh_call()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(call.summary, "Llamada con [person name 2] sobre su prestamo.")
+        self.assertNotIn("Maria Lopez", call.summary or "")
 
     def test_partial_payload_does_not_raise_exception(self) -> None:
         response = self.post_webhook({"event": "call_ended", "call": {"call_id": "retell-call-123"}})

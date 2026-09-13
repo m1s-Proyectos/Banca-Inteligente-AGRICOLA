@@ -351,6 +351,12 @@ h2 {
   border-color: var(--gray-200);
 }
 
+.statusBadge.success {
+  background: rgba(13, 122, 79, 0.1);
+  color: var(--success);
+  border-color: rgba(13, 122, 79, 0.28);
+}
+
 .statusBadge.warning {
   background: rgba(255, 214, 0, 0.22);
   color: var(--graphite);

@@ -487,7 +487,14 @@ def process_webhook(db: Session, raw_body: bytes, payload: dict[str, Any]) -> di
         if recording_url:
             call.recording_url = recording_url
 
-        analysis = call_payload.get("post_call_analysis_data") or {}
+        duration_ms = call_payload.get("duration_ms")
+        if isinstance(duration_ms, (int, float)):
+            call.duration_ms = int(duration_ms)
+
+        # El analisis posterior viaja en call_analysis. post_call_analysis_data es
+        # el nombre del campo de configuracion del agente, no el del resultado, y
+        # leerlo dejaba sentimiento, resumen y outcome en null en todas las llamadas.
+        analysis = call_payload.get("scrubbed_call_analysis") or call_payload.get("call_analysis") or {}
         if not isinstance(analysis, dict):
             analysis = {}
 
@@ -501,8 +508,25 @@ def process_webhook(db: Session, raw_body: bytes, payload: dict[str, Any]) -> di
 
         if "call_successful" in analysis:
             call.call_successful = bool(analysis["call_successful"])
-            if call.call_successful:
-                call.outcome = "VERIFIED_REMINDER_DELIVERED"
+
+        custom = analysis.get("custom_analysis_data")
+        if not isinstance(custom, dict):
+            custom = {}
+
+        if "identity_verified" in custom:
+            call.right_party_verified = bool(custom["identity_verified"])
+        if "reminder_delivered" in custom:
+            call.reminder_delivered = bool(custom["reminder_delivered"])
+
+        call_outcome = custom.get("call_outcome")
+        if call_outcome:
+            # El agente ya clasifica el cierre (reschedule_pending_review,
+            # verification_failed, wrong_person...): su etiqueta es mas precisa
+            # que deducirla de call_successful.
+            call.outcome = str(call_outcome).upper()
+        elif call.call_successful:
+            # ponytail: respaldo por si el agente deja de publicar call_outcome.
+            call.outcome = "VERIFIED_REMINDER_DELIVERED"
 
         if event == "call_started":
             call.started_at = datetime.now(UTC)

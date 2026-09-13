@@ -199,6 +199,7 @@ def list_calls(db: Session) -> list[CallOut]:
             status=call.status,
             outcome=call.outcome,
             sentiment=call.sentiment,
+            duration_ms=call.duration_ms,
             summary=call.summary,
             transcript=call.transcript,
             recording_url=call.recording_url,
