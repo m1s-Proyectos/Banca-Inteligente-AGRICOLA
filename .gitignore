@@ -17,3 +17,5 @@ demo.db
 .zed/
 .codegraph/
 .atl/
+.cursor/
+.mcp.json
