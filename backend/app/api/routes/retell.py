@@ -8,7 +8,9 @@ from pydantic import BaseModel
 
 from app.core.config import settings
 from app.db.session import DbSession
+from app.schemas.dashboard import ToolExecutionOut, WebhookEventOut
 from app.services.audit import record_tool_execution
+from app.services.dashboard import list_tool_executions, list_webhook_events
 from app.services.retell import (
     create_retell_web_call,
     get_assistance_options,
@@ -197,3 +199,13 @@ async def tool_request_reschedule(
         error_code=None if result["accepted"] else result.get("reason"),
     )
     return result
+
+
+@router.get("/tool-executions", response_model=list[ToolExecutionOut])
+def get_tool_executions(db: DbSession) -> list[ToolExecutionOut]:
+    return list_tool_executions(db)
+
+
+@router.get("/webhook-events", response_model=list[WebhookEventOut])
+def get_webhook_events(db: DbSession) -> list[WebhookEventOut]:
+    return list_webhook_events(db)
