@@ -65,6 +65,7 @@ export type Call = {
   status: string;
   outcome: string;
   sentiment: string | null;
+  duration_ms: number | null;
   summary: string | null;
   transcript: string | null;
   recording_url: string | null;

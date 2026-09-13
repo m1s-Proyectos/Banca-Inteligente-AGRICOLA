@@ -15,8 +15,7 @@ import {
   PhoneCall,
   RefreshCw,
   ShieldCheck,
-  Target,
-  TrendingUp,
+  Sparkles,
   UsersRound,
   Webhook,
   Wrench
@@ -270,18 +269,6 @@ function OperationTab({
         <Metric icon={<Clock3 />} label="Pendientes" value={data.summary?.pending_jobs ?? 0} tone="warning" />
         <Metric icon={<PhoneCall />} label="Intentadas" value={data.summary?.attempted_calls ?? 0} tone="secondary" />
         <Metric icon={<CheckCircle2 />} label="Exitosas" value={data.summary?.successful_calls ?? 0} tone="success" />
-        <Metric
-          icon={<TrendingUp />}
-          label="Pago puntual · llamados"
-          value={formatRate(data.summary?.on_time_rate_treatment)}
-          tone="success"
-        />
-        <Metric
-          icon={<Target />}
-          label="Pago puntual · control"
-          value={formatRate(data.summary?.on_time_rate_control)}
-          tone="secondary"
-        />
       </section>
 
       <section className="grid">
@@ -656,6 +643,32 @@ function CustomersTab({
   );
 }
 
+// Retell devuelve Positive / Neutral / Negative / Unknown.
+const SENTIMENT_UI: Record<string, { label: string; tone: string }> = {
+  positive: { label: "Positivo", tone: "success" },
+  negative: { label: "Negativo", tone: "danger" },
+  neutral: { label: "Neutral", tone: "neutral" },
+  unknown: { label: "Sin determinar", tone: "neutral" }
+};
+
+function SentimentBadge({ sentiment }: { sentiment: string }) {
+  const ui = SENTIMENT_UI[sentiment.toLowerCase()] ?? { label: sentiment, tone: "neutral" };
+  return (
+    <span
+      className={`statusBadge ${ui.tone}`}
+      title="Sentimiento estimado por IA a partir de la conversacion. No es una afirmacion verificada sobre el cliente."
+    >
+      <Sparkles size={12} aria-hidden="true" /> {ui.label}
+    </span>
+  );
+}
+
+function callDuration(ms: number | null) {
+  if (!ms) return null;
+  const total = Math.round(ms / 1000);
+  return `${Math.floor(total / 60)} min ${String(total % 60).padStart(2, "0")} s`;
+}
+
 function CallsTab({ jobs, calls }: { jobs: CallJob[]; calls: Call[] }) {
   return (
     <>
@@ -718,14 +731,17 @@ function CallsTab({ jobs, calls }: { jobs: CallJob[]; calls: Call[] }) {
               <header>
                 <div>
                   <strong>{call.customer_name}</strong>
-                  <small>{new Date(call.created_at).toLocaleString()}</small>
+                  <small>
+                    {new Date(call.created_at).toLocaleString()}
+                    {callDuration(call.duration_ms) && ` · ${callDuration(call.duration_ms)}`}
+                  </small>
                 </div>
                 <div className="badgeRow">
                   <span className="statusBadge neutral">{call.status}</span>
                   <span className={call.outcome === "BLOCKED_BY_ALLOWLIST" ? "statusBadge danger" : "statusBadge warning"}>
                     {call.outcome}
                   </span>
-                  {call.sentiment && <span className="statusBadge neutral">{call.sentiment}</span>}
+                  {call.sentiment && <SentimentBadge sentiment={call.sentiment} />}
                 </div>
               </header>
               <p>{call.summary ?? "Sin resumen todavía."}</p>
@@ -894,13 +910,6 @@ function punctuality(customer: Customer) {
       </small>
     </>
   );
-}
-
-function formatRate(rate: number | null | undefined) {
-  // null viene del backend cuando no hay resultados de pago cargados: "sin
-  // medicion" no es lo mismo que "nadie pago".
-  if (rate === null || rate === undefined) return "—";
-  return `${Math.round(rate * 100)}%`;
 }
 
 function Metric({

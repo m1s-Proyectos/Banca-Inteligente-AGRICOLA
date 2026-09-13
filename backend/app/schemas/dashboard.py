@@ -68,6 +68,7 @@ class CallOut(BaseModel):
     status: str
     outcome: str
     sentiment: str | None
+    duration_ms: int | None
     summary: str | None
     transcript: str | None
     recording_url: str | None
