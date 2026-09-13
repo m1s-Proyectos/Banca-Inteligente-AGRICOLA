@@ -158,6 +158,30 @@ class RetellWebhookEndpointTests(unittest.TestCase):
         self.assertTrue(call.call_successful)
         self.assertIsNotNone(call.ended_at)
 
+    def test_call_analyzed_replaces_raw_recording_with_scrubbed_version(self) -> None:
+        ended = self.post_webhook(
+            {
+                "event": "call_ended",
+                "call": {
+                    "call_id": "retell-call-123",
+                    "recording_url": "https://recordings.example/raw.wav",
+                },
+            }
+        )
+        analyzed = self.post_webhook(
+            {
+                "event": "call_analyzed",
+                "call": {
+                    "call_id": "retell-call-123",
+                    "scrubbed_recording_url": "https://recordings.example/scrubbed.wav",
+                },
+            }
+        )
+
+        self.assertEqual(ended.status_code, 200)
+        self.assertEqual(analyzed.status_code, 200)
+        self.assertEqual(self.refresh_call().recording_url, "https://recordings.example/scrubbed.wav")
+
     def test_partial_payload_does_not_raise_exception(self) -> None:
         response = self.post_webhook({"event": "call_ended", "call": {"call_id": "retell-call-123"}})
 
