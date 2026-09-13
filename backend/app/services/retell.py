@@ -483,7 +483,7 @@ def process_webhook(db: Session, raw_body: bytes, payload: dict[str, Any]) -> di
         if transcript:
             call.transcript = transcript
 
-        recording_url = call_payload.get("recording_url")
+        recording_url = call_payload.get("scrubbed_recording_url") or call_payload.get("recording_url")
         if recording_url:
             call.recording_url = recording_url
 
