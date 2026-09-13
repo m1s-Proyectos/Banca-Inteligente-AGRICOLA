@@ -1,6 +1,7 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import settings
@@ -11,6 +12,8 @@ from app.models import (
     Customer,
     Obligation,
     PaymentOutcome,
+    ToolExecution,
+    WebhookEvent,
 )
 from app.schemas.dashboard import (
     CallJobOut,
@@ -18,6 +21,8 @@ from app.schemas.dashboard import (
     CustomerOut,
     DashboardSummary,
     ObligationOut,
+    ToolExecutionOut,
+    WebhookEventOut,
 )
 
 
@@ -42,34 +47,105 @@ def get_or_create_demo_campaign(db: Session) -> Campaign:
     return campaign
 
 
+def today_for(timezone: str) -> date:
+    """Fecha de hoy en la zona del cliente.
+
+    Los dias restantes hasta el vencimiento se cuentan desde el calendario del
+    cliente: a las 20:00 de El Salvador ya es el dia siguiente en UTC, y un
+    recordatorio preventivo que dice "vence en 2 dias" en vez de 3 pierde
+    credibilidad. Cae a UTC si la zona guardada no existe en la tzdata del host.
+    """
+    try:
+        zone = ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = UTC
+    return datetime.now(zone).date()
+
+
 def list_customers(db: Session) -> list[CustomerOut]:
     customers = db.scalars(
         select(Customer)
-        .options(selectinload(Customer.contacts), selectinload(Customer.obligations))
+        .options(
+            selectinload(Customer.contacts),
+            selectinload(Customer.obligations).selectinload(Obligation.assistance_options),
+        )
         .order_by(Customer.preferred_name)
     ).all()
+
+    # Dos agregados sueltos en vez de una consulta por cliente: con N clientes
+    # el panel hacia 2N+1 viajes a la base.
+    payments = {
+        row.obligation_id: (row.on_time, row.total)
+        for row in db.execute(
+            select(
+                PaymentOutcome.obligation_id,
+                func.count(PaymentOutcome.id).label("total"),
+                func.sum(case((PaymentOutcome.status == "ON_TIME", 1), else_=0)).label("on_time"),
+            ).group_by(PaymentOutcome.obligation_id)
+        )
+    }
+
+    # row_number en vez de max(created_at): necesitamos el outcome de esa misma
+    # fila, y un max() por separado se puede aparear con la llamada equivocada
+    # cuando dos comparten timestamp.
+    ranked_calls = (
+        select(
+            Call.customer_id,
+            Call.created_at,
+            Call.outcome,
+            func.row_number()
+            .over(partition_by=Call.customer_id, order_by=Call.created_at.desc())
+            .label("rank"),
+        )
+        .subquery()
+    )
+    last_calls = {
+        row.customer_id: row for row in db.execute(select(ranked_calls).where(ranked_calls.c.rank == 1))
+    }
+
     output = []
     for customer in customers:
         primary = next((contact for contact in customer.contacts if contact.is_primary), None)
+        today = today_for(customer.timezone)
+        last_call = last_calls.get(customer.id)
         output.append(
             CustomerOut(
                 id=customer.id,
                 external_ref=customer.external_ref,
                 preferred_name=customer.preferred_name,
+                birth_year=customer.birth_year,
                 timezone=customer.timezone,
                 language=customer.language,
                 segment=customer.segment,
                 status=customer.status,
+                cohort=customer.cohort,
                 phone_last4=primary.phone_last4 if primary else None,
                 do_not_call=primary.do_not_call if primary else False,
+                consent_status=primary.consent_status if primary else None,
+                preferred_call_window=primary.preferred_call_window if primary else None,
+                last_call_at=last_call.created_at if last_call else None,
+                last_call_outcome=last_call.outcome if last_call else None,
                 obligations=[
                     ObligationOut(
                         id=item.id,
                         product_type=item.product_type,
                         next_due_date=item.next_due_date,
+                        days_to_due=(item.next_due_date - today).days,
                         amount_due=item.amount_due,
                         currency=item.currency,
                         status=item.status,
+                        reschedule_eligible=any(o.reschedule_eligible for o in item.assistance_options),
+                        earliest_new_date=next(
+                            (o.earliest_new_date for o in item.assistance_options if o.earliest_new_date), None
+                        ),
+                        latest_new_date=next(
+                            (o.latest_new_date for o in item.assistance_options if o.latest_new_date), None
+                        ),
+                        unemployment_insurance_active=any(
+                            o.unemployment_insurance_active for o in item.assistance_options
+                        ),
+                        on_time_payments=payments.get(item.id, (0, 0))[0] or 0,
+                        total_payments=payments.get(item.id, (0, 0))[1] or 0,
                     )
                     for item in customer.obligations
                 ],
@@ -132,6 +208,45 @@ def list_calls(db: Session) -> list[CallOut]:
     ]
 
 
+def list_tool_executions(db: Session, limit: int = 50) -> list[ToolExecutionOut]:
+    """Auditoria de las Custom Functions que invoco el agente.
+
+    request_redacted nunca trae la fecha de nacimiento ni el token, asi que es
+    seguro exponerla al panel tal como se guardo.
+    """
+    rows = db.scalars(select(ToolExecution).order_by(ToolExecution.started_at.desc()).limit(limit)).all()
+    return [
+        ToolExecutionOut(
+            id=row.id,
+            retell_call_id=row.retell_call_id,
+            tool_name=row.tool_name,
+            started_at=row.started_at,
+            duration_ms=row.duration_ms,
+            status=row.status,
+            error_code=row.error_code,
+            request_redacted=row.request_redacted or {},
+            response_redacted=row.response_redacted or {},
+        )
+        for row in rows
+    ]
+
+
+def list_webhook_events(db: Session, limit: int = 50) -> list[WebhookEventOut]:
+    rows = db.scalars(select(WebhookEvent).order_by(WebhookEvent.received_at.desc()).limit(limit)).all()
+    return [
+        WebhookEventOut(
+            id=row.id,
+            retell_call_id=row.retell_call_id,
+            event_type=row.event_type,
+            received_at=row.received_at,
+            processed_at=row.processed_at,
+            status=row.status,
+            error=row.error,
+        )
+        for row in rows
+    ]
+
+
 def on_time_payment_rate(db: Session, cohort: str) -> float | None:
     """Proporcion de obligaciones pagadas en fecha para una cohorte.
 
@@ -162,4 +277,3 @@ def get_summary(db: Session) -> DashboardSummary:
         on_time_rate_treatment=on_time_payment_rate(db, "TREATMENT"),
         on_time_rate_control=on_time_payment_rate(db, "CONTROL"),
     )
-
