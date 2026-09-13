@@ -4,8 +4,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import settings
-from app.models import Call, CallJob, Campaign, Customer, CustomerContact, Obligation
-from app.schemas.dashboard import CallJobOut, CallOut, CustomerOut, DashboardSummary, ObligationOut
+from app.models import Call, CallJob, Campaign, Customer, Obligation
+from app.schemas.dashboard import (
+    CallJobOut,
+    CallOut,
+    CustomerOut,
+    DashboardSummary,
+    ObligationOut,
+)
 
 
 def get_or_create_demo_campaign(db: Session) -> Campaign:
