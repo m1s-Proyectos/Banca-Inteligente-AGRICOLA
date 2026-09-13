@@ -39,7 +39,6 @@ class RetellSignatureTests(unittest.TestCase):
         self.original_retell_api_key = retell.settings.retell_api_key
         retell.settings.fake_data_only = False
         retell.settings.retell_api_key = RETELL_TEST_SECRET
-        retell._verification_tokens.clear()
 
         self.engine = create_engine(
             "sqlite://",
@@ -72,7 +71,6 @@ class RetellSignatureTests(unittest.TestCase):
         self.db.close()
         Base.metadata.drop_all(bind=self.engine)
         self.engine.dispose()
-        retell._verification_tokens.clear()
         retell.settings.fake_data_only = self.original_fake_data_only
         retell.settings.retell_api_key = self.original_retell_api_key
 

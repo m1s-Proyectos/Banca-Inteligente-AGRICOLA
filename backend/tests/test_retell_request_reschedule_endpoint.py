@@ -2,21 +2,27 @@ import unittest
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
+from app.db.base import Base
+from app.db.session import get_db
+from app.main import app
+from app.models import (
+    AssistanceOption,
+    Call,
+    CallJob,
+    Campaign,
+    Customer,
+    CustomerAction,
+    Obligation,
+)
+from app.services import retell
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from app.db.base import Base
-from app.db.session import get_db
-from app.main import app
-from app.models import Call, CallJob, Campaign, Customer, CustomerAction, Obligation
-from app.services import retell
-
 
 class RequestRescheduleEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
-        retell._verification_tokens.clear()
         self.engine = create_engine(
             "sqlite://",
             connect_args={"check_same_thread": False},
@@ -28,6 +34,7 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         self.customer = self.create_customer("CUS-RSCH", "Maria")
         self.other_customer = self.create_customer("CUS-RSCH-OTHER", "Carlos")
         self.customer_without_call = self.create_customer("CUS-RSCH-NO-CALL", "Ana")
+        self.customer_not_eligible = self.create_customer("CUS-RSCH-NOT-ELIGIBLE", "Lucia")
         self.campaign = Campaign(
             name="Test campaign",
             status="ACTIVE",
@@ -39,23 +46,33 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         self.db.flush()
 
         self.obligation = self.create_obligation(self.customer.id, "OBL-RSCH")
+        self.db.add(
+            AssistanceOption(
+                obligation_id=self.obligation.id,
+                reschedule_eligible=True,
+                earliest_new_date=date(2026, 9, 18),
+                latest_new_date=date(2026, 9, 25),
+                unemployment_insurance_active=False,
+                insurance_instructions="",
+            )
+        )
         self.no_call_obligation = self.create_obligation(self.customer_without_call.id, "OBL-RSCH-NO-CALL")
-        self.call_job = CallJob(
-            campaign_id=self.campaign.id,
-            customer_id=self.customer.id,
-            obligation_id=self.obligation.id,
-            scheduled_at=datetime.now(UTC),
-            status="SENT",
+
+        self.not_eligible_obligation = self.create_obligation(self.customer_not_eligible.id, "OBL-RSCH-NOT-ELIGIBLE")
+        self.db.add(
+            AssistanceOption(
+                obligation_id=self.not_eligible_obligation.id,
+                reschedule_eligible=False,
+                earliest_new_date=date(2026, 9, 18),
+                latest_new_date=date(2026, 9, 25),
+                unemployment_insurance_active=False,
+                insurance_instructions="",
+            )
         )
-        self.db.add(self.call_job)
-        self.db.flush()
-        self.call = Call(
-            call_job_id=self.call_job.id,
-            customer_id=self.customer.id,
-            status="REGISTERED",
-            outcome="PENDING",
-        )
-        self.db.add(self.call)
+        self.call_job = self.create_call_job(self.customer.id, self.obligation.id)
+        self.call = self.create_call(self.call_job.id, self.customer.id)
+        self.not_eligible_call_job = self.create_call_job(self.customer_not_eligible.id, self.not_eligible_obligation.id)
+        self.not_eligible_call = self.create_call(self.not_eligible_call_job.id, self.customer_not_eligible.id)
         self.db.commit()
 
         def override_get_db():
@@ -69,7 +86,6 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         self.db.close()
         Base.metadata.drop_all(bind=self.engine)
         self.engine.dispose()
-        retell._verification_tokens.clear()
 
     def create_customer(self, external_ref: str, name: str) -> Customer:
         customer = Customer(
@@ -99,11 +115,34 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         self.db.flush()
         return obligation
 
+    def create_call_job(self, customer_id: str, obligation_id: str) -> CallJob:
+        call_job = CallJob(
+            campaign_id=self.campaign.id,
+            customer_id=customer_id,
+            obligation_id=obligation_id,
+            scheduled_at=datetime.now(UTC),
+            status="SENT",
+        )
+        self.db.add(call_job)
+        self.db.flush()
+        return call_job
+
+    def create_call(self, call_job_id: str, customer_id: str) -> Call:
+        call = Call(
+            call_job_id=call_job_id,
+            customer_id=customer_id,
+            status="REGISTERED",
+            outcome="PENDING",
+        )
+        self.db.add(call)
+        self.db.flush()
+        return call
+
     def post_reschedule(self, payload: dict) -> tuple[int, dict]:
         response = self.client.post("/api/v1/retell/tools/request-reschedule", json=payload)
         return response.status_code, response.json()
 
-    def test_valid_token_accepts_request(self) -> None:
+    def test_valid_token_accepts_request_within_range(self) -> None:
         token = retell.issue_verification_token(self.customer.id)
         status_code, body = self.post_reschedule(
             {"customer_ref": self.customer.id, "verification_token": token, "proposed_date": "2026-09-20"}
@@ -164,6 +203,20 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         self.assertEqual(status_code, 200)
         self.assertEqual(body, {"accepted": True, "status": "PENDING_REVIEW"})
 
+    def test_obligation_ref_is_honored(self) -> None:
+        token = retell.issue_verification_token(self.customer.id)
+        status_code, body = self.post_reschedule(
+            {
+                "customer_ref": self.customer.id,
+                "verification_token": token,
+                "proposed_date": "2026-09-20",
+                "obligation_ref": self.obligation.id,
+            }
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(body, {"accepted": True, "status": "PENDING_REVIEW"})
+
     def test_valid_proposal_creates_customer_action(self) -> None:
         token = retell.issue_verification_token(self.customer.id)
         self.post_reschedule(
@@ -176,6 +229,35 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         self.assertEqual(action.type, "RESCHEDULE_REQUEST")
         self.assertEqual(action.status, "PENDING_REVIEW")
         self.assertEqual(action.proposed_date, date(2026, 9, 20))
+
+    def test_date_outside_approved_range_is_rejected_with_bounds(self) -> None:
+        token = retell.issue_verification_token(self.customer.id)
+        status_code, body = self.post_reschedule(
+            {"customer_ref": self.customer.id, "verification_token": token, "proposed_date": "2026-10-15"}
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(
+            body,
+            {
+                "accepted": False,
+                "reason": "out_of_range",
+                "earliest_new_date": "2026-09-18",
+                "latest_new_date": "2026-09-25",
+            },
+        )
+
+        actions = self.db.scalars(select(CustomerAction)).all()
+        self.assertEqual(actions, [])
+
+    def test_customer_without_eligibility_is_rejected(self) -> None:
+        token = retell.issue_verification_token(self.customer_not_eligible.id)
+        status_code, body = self.post_reschedule(
+            {"customer_ref": self.customer_not_eligible.id, "verification_token": token, "proposed_date": "2026-09-20"}
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(body, {"accepted": False, "reason": "not_eligible"})
 
     def test_missing_call_returns_safe_response_without_exception(self) -> None:
         token = retell.issue_verification_token(self.customer_without_call.id)

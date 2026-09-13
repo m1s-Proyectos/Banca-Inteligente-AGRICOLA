@@ -14,7 +14,6 @@ from app.services import retell
 
 class VerifyIdentityEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
-        retell._verification_tokens.clear()
         self.engine = create_engine(
             "sqlite://",
             connect_args={"check_same_thread": False},
@@ -101,7 +100,6 @@ class VerifyIdentityEndpointTests(unittest.TestCase):
         _, body = self.post_verify({"customer_ref": self.customer.id, "supplied_dob": "1990-01-01"})
 
         self.assertIsNone(body["verification_token"])
-        self.assertEqual(retell._verification_tokens, {})
 
 
 if __name__ == "__main__":
