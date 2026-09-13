@@ -4,7 +4,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import settings
-from app.models import Call, CallJob, Campaign, Customer, CustomerContact, Obligation
+from app.models import Call, CallJob, Campaign, Customer, CustomerContact, Obligation, PaymentOutcome
 from app.schemas.dashboard import CallJobOut, CallOut, CustomerOut, DashboardSummary, ObligationOut
 
 
@@ -119,6 +119,25 @@ def list_calls(db: Session) -> list[CallOut]:
     ]
 
 
+def on_time_payment_rate(db: Session, cohort: str) -> float | None:
+    """Proporcion de obligaciones pagadas en fecha para una cohorte.
+
+    Devuelve None en vez de 0 cuando no hay datos, para que el panel distingue
+    "sin medicion" de "nadie pago".
+    """
+    base = (
+        select(func.count(PaymentOutcome.id))
+        .join(Obligation, PaymentOutcome.obligation_id == Obligation.id)
+        .join(Customer, Obligation.customer_id == Customer.id)
+        .where(Customer.cohort == cohort)
+    )
+    total = db.scalar(base) or 0
+    if not total:
+        return None
+    on_time = db.scalar(base.where(PaymentOutcome.status == "ON_TIME")) or 0
+    return round(on_time / total, 4)
+
+
 def get_summary(db: Session) -> DashboardSummary:
     return DashboardSummary(
         customers=db.scalar(select(func.count(Customer.id))) or 0,
@@ -127,5 +146,7 @@ def get_summary(db: Session) -> DashboardSummary:
         attempted_calls=db.scalar(select(func.count(Call.id))) or 0,
         successful_calls=db.scalar(select(func.count(Call.id)).where(Call.call_successful.is_(True))) or 0,
         blocked_calls=db.scalar(select(func.count(Call.id)).where(Call.outcome == "BLOCKED_BY_ALLOWLIST")) or 0,
+        on_time_rate_treatment=on_time_payment_rate(db, "TREATMENT"),
+        on_time_rate_control=on_time_payment_rate(db, "CONTROL"),
     )
 

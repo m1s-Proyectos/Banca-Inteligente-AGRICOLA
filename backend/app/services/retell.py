@@ -2,20 +2,34 @@ import hashlib
 import hmac
 import time
 import secrets
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import AssistanceOption, Call, CallJob, Customer, CustomerAction, CustomerContact, Obligation, WebhookEvent
+from app.core.security import dob_matches, normalize_dob  # noqa: F401  (normalize_dob se reexporta)
+from app.services.audit import resolve_internal_call_id
+
+from app.models import (
+    AssistanceOption,
+    Call,
+    CallJob,
+    Customer,
+    CustomerAction,
+    CustomerContact,
+    Obligation,
+    VerificationToken,
+    WebhookEvent,
+)
 
 
 VERIFICATION_TOKEN_BYTES = 32
 RETELL_SIGNATURE_TOLERANCE_SECONDS = 300
-_verification_tokens: dict[str, str] = {}
+VERIFICATION_TOKEN_TTL_SECONDS = 900
 
 def verification_failed_response() -> dict[str, Any]:
     return {"verified": False, "verification_token": None, "message": ""}
@@ -69,42 +83,76 @@ def payload_hash(raw_body: bytes) -> str:
     return hashlib.sha256(raw_body).hexdigest()
 
 
-def normalize_dob(value: str) -> str:
-    return value.strip().replace("/", "-")
-
-
 def generate_verification_token() -> str:
     return secrets.token_urlsafe(VERIFICATION_TOKEN_BYTES)
 
 
-def issue_verification_token(customer_ref: str) -> str:
+def as_utc(value: datetime) -> datetime:
+    """SQLite devuelve datetimes naive aunque la columna sea timezone=True."""
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def issue_verification_token(db: Session, customer_ref: str, retell_call_id: str | None = None) -> str:
     token = generate_verification_token()
-    _verification_tokens[token] = customer_ref
+    db.add(
+        VerificationToken(
+            token=token,
+            customer_id=customer_ref,
+            call_id=resolve_internal_call_id(db, retell_call_id),
+            retell_call_id=retell_call_id,
+            expires_at=datetime.now(UTC) + timedelta(seconds=VERIFICATION_TOKEN_TTL_SECONDS),
+        )
+    )
+    db.commit()
     return token
 
 
-def is_verification_token_valid(customer_ref: str, verification_token: str) -> bool:
-    return _verification_tokens.get(verification_token) == customer_ref
+def is_verification_token_valid(
+    db: Session,
+    customer_ref: str,
+    verification_token: str,
+    retell_call_id: str | None = None,
+) -> bool:
+    record = db.scalar(select(VerificationToken).where(VerificationToken.token == verification_token))
+    if not record or record.customer_id != customer_ref:
+        return False
+    if as_utc(record.expires_at) <= datetime.now(UTC):
+        return False
+    # ponytail: la llamada se compara solo cuando ambos lados la conocen. Retell no
+    # siempre manda call_id en las Custom Functions, y rechazar por ausencia romperia
+    # el flujo real. Upgrade: exigirlo cuando se confirme que el payload lo incluye.
+    if record.retell_call_id and retell_call_id and record.retell_call_id != retell_call_id:
+        return False
+    return True
 
 
-def verify_identity(db: Session, customer_ref: str, supplied_dob: str) -> dict[str, Any]:
+def verify_identity(
+    db: Session,
+    customer_ref: str,
+    supplied_dob: str,
+    retell_call_id: str | None = None,
+) -> dict[str, Any]:
     customer = db.scalar(select(Customer).where(Customer.id == customer_ref))
     if not customer:
         return verification_failed_response()
 
-    verified = normalize_dob(customer.dob) == normalize_dob(supplied_dob)
-    if not verified:
+    if not dob_matches(customer.dob_hash, supplied_dob):
         return verification_failed_response()
 
     return {
         "verified": True,
-        "verification_token": issue_verification_token(customer.id),
+        "verification_token": issue_verification_token(db, customer.id, retell_call_id),
         "message": "Identidad verificada",
     }
 
 
-def get_assistance_options(db: Session, customer_ref: str, verification_token: str) -> dict[str, Any]:
-    if not is_verification_token_valid(customer_ref, verification_token):
+def get_assistance_options(
+    db: Session,
+    customer_ref: str,
+    verification_token: str,
+    retell_call_id: str | None = None,
+) -> dict[str, Any]:
+    if not is_verification_token_valid(db, customer_ref, verification_token, retell_call_id):
         return {"authorized": False, "options": []}
 
     obligation = db.scalar(select(Obligation).where(Obligation.customer_id == customer_ref).limit(1))
@@ -133,8 +181,14 @@ def get_assistance_options(db: Session, customer_ref: str, verification_token: s
     }
 
 
-def request_reschedule(db: Session, customer_ref: str, verification_token: str, proposed_date: str) -> dict[str, Any]:
-    if not is_verification_token_valid(customer_ref, verification_token):
+def request_reschedule(
+    db: Session,
+    customer_ref: str,
+    verification_token: str,
+    proposed_date: str,
+    retell_call_id: str | None = None,
+) -> dict[str, Any]:
+    if not is_verification_token_valid(db, customer_ref, verification_token, retell_call_id):
         return {"accepted": False, "reason": "not_verified"}
 
     try:
@@ -159,12 +213,57 @@ def request_reschedule(db: Session, customer_ref: str, verification_token: str, 
     return {"accepted": True, "status": "PENDING_REVIEW"}
 
 
+def build_dynamic_variables(customer: Customer, obligation: Obligation, days_remaining: int) -> dict[str, str]:
+    today = datetime.now(ZoneInfo(customer.timezone)).date()
+    # ponytail: edad derivada solo del anio de nacimiento, asi que puede quedar
+    # 1 alta si el cumpleanios aun no paso. Suficiente para que el agente adapte
+    # el tono, y es el precio de no almacenar la fecha completa (ver §2 del plan).
+    # Upgrade: si se necesita edad exacta, cifrar dob de forma reversible.
+    age = today.year - customer.birth_year
+    return {
+        "customer_ref": customer.id,
+        "obligation_ref": obligation.id,
+        "nom_cliente": customer.preferred_name,
+        "fecha_pago": obligation.next_due_date.isoformat(),
+        "monto_deuda": f"{obligation.amount_due:.2f}",
+        "moneda": obligation.currency,
+        "dias_restantes_pago": str(days_remaining),
+        "nom_producto": obligation.product_type,
+        "edad_cliente": str(age),
+        "language": customer.language,
+        "timezone": customer.timezone,
+        # Compatibilidad con el contrato original del guion.
+        "preferred_name": customer.preferred_name,
+        "next_due_date": obligation.next_due_date.isoformat(),
+    }
+
+
 async def create_retell_call(db: Session, job: CallJob) -> Call:
     contact = db.scalar(select(CustomerContact).where(CustomerContact.customer_id == job.customer_id, CustomerContact.is_primary.is_(True)))
     customer = db.get(Customer, job.customer_id)
     obligation = db.get(Obligation, job.obligation_id)
     call = Call(call_job_id=job.id, customer_id=job.customer_id, status="REGISTERED", outcome="PENDING")
     db.add(call)
+
+    if not customer or not obligation:
+        call.status = "BLOCKED"
+        call.outcome = "BLOCKED_MISSING_CONTEXT"
+        job.status = "BLOCKED"
+        job.last_error = "Cliente u obligación inexistente para el trabajo"
+        db.commit()
+        return call
+
+    # Día calendario del cliente: "vencida" y "días restantes" se definen en su
+    # zona horaria, no en UTC ni en el reloj del servidor.
+    today = datetime.now(ZoneInfo(customer.timezone)).date()
+    days_remaining = (obligation.next_due_date - today).days
+    if days_remaining < 0:
+        call.status = "BLOCKED"
+        call.outcome = "BLOCKED_OVERDUE"
+        job.status = "BLOCKED"
+        job.last_error = f"Obligación vencida hace {-days_remaining} día(s)"
+        db.commit()
+        return call
 
     if not contact or contact.do_not_call or contact.consent_status != "OPTED_IN":
         call.status = "BLOCKED"
@@ -194,13 +293,7 @@ async def create_retell_call(db: Session, job: CallJob) -> Call:
         "from_number": settings.retell_from_number,
         "to_number": contact.phone_e164,
         "override_agent_id": settings.retell_agent_id,
-        "retell_llm_dynamic_variables": {
-            "customer_ref": customer.id,
-            "preferred_name": customer.preferred_name,
-            "next_due_date": obligation.next_due_date.isoformat(),
-            "language": customer.language,
-            "timezone": customer.timezone,
-        },
+        "retell_llm_dynamic_variables": build_dynamic_variables(customer, obligation, days_remaining),
         "metadata": {"call_job_id": job.id, "customer_id": customer.id},
     }
 

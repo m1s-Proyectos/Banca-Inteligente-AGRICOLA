@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.core.security import hash_dob
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
@@ -27,7 +28,8 @@ class RetellWebhookEndpointTests(unittest.TestCase):
         self.customer = Customer(
             external_ref="CUS-WEBHOOK",
             preferred_name="Maria",
-            dob="1991-04-12",
+            dob_hash=hash_dob("1991-04-12"),
+            birth_year=1991,
             timezone="America/El_Salvador",
             language="es",
             segment="test",

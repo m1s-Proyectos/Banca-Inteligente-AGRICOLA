@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.core.security import hash_dob
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
@@ -16,7 +17,6 @@ from app.services import retell
 
 class GetAssistanceOptionsEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
-        retell._verification_tokens.clear()
         self.engine = create_engine(
             "sqlite://",
             connect_args={"check_same_thread": False},
@@ -74,13 +74,13 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         self.db.close()
         Base.metadata.drop_all(bind=self.engine)
         self.engine.dispose()
-        retell._verification_tokens.clear()
 
     def create_customer(self, external_ref: str, name: str) -> Customer:
         customer = Customer(
             external_ref=external_ref,
             preferred_name=name,
-            dob="1991-04-12",
+            dob_hash=hash_dob("1991-04-12"),
+            birth_year=1991,
             timezone="America/El_Salvador",
             language="es",
             segment="test",
@@ -95,7 +95,7 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         return response.status_code, response.json()
 
     def test_valid_token_authorizes_request(self) -> None:
-        token = retell.issue_verification_token(self.customer.id)
+        token = retell.issue_verification_token(self.db, self.customer.id)
         status_code, body = self.post_assistance(
             {"customer_ref": self.customer.id, "verification_token": token}
         )
@@ -112,7 +112,7 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         self.assertEqual(body, {"authorized": False, "options": []})
 
     def test_token_for_other_customer_returns_unauthorized_response(self) -> None:
-        token = retell.issue_verification_token(self.other_customer.id)
+        token = retell.issue_verification_token(self.db, self.other_customer.id)
         status_code, body = self.post_assistance(
             {"customer_ref": self.customer.id, "verification_token": token}
         )
@@ -127,7 +127,7 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         self.assertEqual(body, {"authorized": False, "options": []})
 
     def test_args_wrapper_format_works(self) -> None:
-        token = retell.issue_verification_token(self.customer.id)
+        token = retell.issue_verification_token(self.db, self.customer.id)
         status_code, body = self.post_assistance(
             {"args": {"customer_ref": self.customer.id, "verification_token": token}}
         )
@@ -137,7 +137,7 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         self.assertEqual(len(body["options"]), 2)
 
     def test_valid_options_have_expected_structure(self) -> None:
-        token = retell.issue_verification_token(self.customer.id)
+        token = retell.issue_verification_token(self.db, self.customer.id)
         _, body = self.post_assistance({"customer_ref": self.customer.id, "verification_token": token})
 
         self.assertEqual(
@@ -161,7 +161,7 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         )
 
     def test_response_does_not_return_verification_token(self) -> None:
-        token = retell.issue_verification_token(self.customer.id)
+        token = retell.issue_verification_token(self.db, self.customer.id)
         _, body = self.post_assistance({"customer_ref": self.customer.id, "verification_token": token})
 
         self.assertNotIn("verification_token", body)
@@ -169,7 +169,7 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
             self.assertNotIn("verification_token", option)
 
     def test_valid_customer_without_options_returns_empty_options(self) -> None:
-        token = retell.issue_verification_token(self.customer_without_options.id)
+        token = retell.issue_verification_token(self.db, self.customer_without_options.id)
         status_code, body = self.post_assistance(
             {"customer_ref": self.customer_without_options.id, "verification_token": token}
         )

@@ -18,11 +18,13 @@ class Customer(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     external_ref: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
     preferred_name: Mapped[str] = mapped_column(String(120), nullable=False)
-    dob: Mapped[str] = mapped_column(String(10), nullable=False)
+    dob_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    birth_year: Mapped[int] = mapped_column(Integer, nullable=False)
     timezone: Mapped[str] = mapped_column(String(80), nullable=False)
     language: Mapped[str] = mapped_column(String(8), nullable=False)
     segment: Mapped[str] = mapped_column(String(80), nullable=False)
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="ACTIVE")
+    cohort: Mapped[str] = mapped_column(String(20), nullable=False, default="TREATMENT")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     contacts: Mapped[list["CustomerContact"]] = relationship(back_populates="customer", cascade="all, delete-orphan")
@@ -157,3 +159,63 @@ class WebhookEvent(Base):
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="RECEIVED")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+
+
+class VerificationToken(Base):
+    """Token emitido tras verificar identidad.
+
+    Vive en la base y no en memoria del proceso para que sobreviva a reinicios,
+    funcione con mas de un worker de uvicorn y deje evidencia auditable de que
+    la verificacion ocurrio antes de revelar informacion financiera.
+    """
+
+    __tablename__ = "verification_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    token: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    customer_id: Mapped[str] = mapped_column(ForeignKey("customers.id"), nullable=False)
+    call_id: Mapped[str | None] = mapped_column(ForeignKey("calls.id"), nullable=True)
+    retell_call_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ToolExecution(Base):
+    """Registro de cada Custom Function invocada por Retell.
+
+    Es la evidencia de que la informacion complementaria solo se consulto
+    despues de verificar identidad. `request_redacted` nunca contiene la fecha
+    de nacimiento ni el token.
+    """
+
+    __tablename__ = "tool_executions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    call_id: Mapped[str | None] = mapped_column(ForeignKey("calls.id"), nullable=True)
+    retell_call_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    tool_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    request_redacted: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    response_redacted: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="OK")
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+
+class PaymentOutcome(Base):
+    """Resultado de pago de una obligacion, para medir pago puntual.
+
+    Sin esta tabla el panel solo puede medir actividad (llamadas hechas) en vez
+    de resultado (si el cliente pago a tiempo), que es la metrica que el plan
+    define como impacto principal.
+    """
+
+    __tablename__ = "payment_outcomes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    obligation_id: Mapped[str] = mapped_column(ForeignKey("obligations.id"), nullable=False)
+    due_date: Mapped[date] = mapped_column(Date, nullable=False)
+    paid_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    amount_paid: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_batch_id: Mapped[str | None] = mapped_column(String(80), nullable=True)

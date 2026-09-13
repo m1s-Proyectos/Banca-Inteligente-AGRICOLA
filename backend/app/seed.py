@@ -3,8 +3,9 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
+from app.core.security import hash_dob
 from app.db.session import SessionLocal
-from app.models import AssistanceOption, Campaign, Customer, CustomerContact, Obligation
+from app.models import AssistanceOption, Campaign, Customer, CustomerContact, Obligation, PaymentOutcome
 
 
 SCENARIOS = [
@@ -41,11 +42,13 @@ def main() -> None:
             customer = Customer(
                 external_ref=f"CUS-{index:03d}",
                 preferred_name=name,
-                dob=dob,
+                dob_hash=hash_dob(dob),
+                birth_year=int(dob[:4]),
                 timezone="America/El_Salvador",
                 language="es",
                 segment=segment,
                 status="ACTIVE",
+                cohort="TREATMENT" if index % 2 else "CONTROL",
             )
             db.add(customer)
             db.flush()
@@ -82,6 +85,25 @@ def main() -> None:
                 insurance_instructions="Escalar a asesor humano para validar cobertura de desempleo." if insurance else "",
             )
             db.add(option)
+
+            # Historial de pago de 3 ciclos previos. El patron es determinista y
+            # codifica un lift a favor del grupo llamado (83% contra 67%).
+            # ponytail: con 8 clientes esto es una cifra de demo, no evidencia
+            # estadistica. Techo: la muestra. Upgrade: importar pagos reales.
+            late_every = 5 if index % 2 else 3
+            for cycle in range(1, 4):
+                cycle_due_date = obligation.next_due_date - timedelta(days=30 * cycle)
+                on_time = (index + cycle) % late_every != 0
+                db.add(
+                    PaymentOutcome(
+                        obligation_id=obligation.id,
+                        due_date=cycle_due_date,
+                        paid_at=cycle_due_date if on_time else cycle_due_date + timedelta(days=6),
+                        amount_paid=obligation.amount_due,
+                        status="ON_TIME" if on_time else "LATE",
+                        source_batch_id="synthetic",
+                    )
+                )
 
         db.commit()
         print("Seed completed: synthetic customers loaded.")

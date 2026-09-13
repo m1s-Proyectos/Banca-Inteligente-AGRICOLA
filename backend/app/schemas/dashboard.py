@@ -61,4 +61,7 @@ class DashboardSummary(BaseModel):
     attempted_calls: int
     successful_calls: int
     blocked_calls: int
+    # Resultado, no actividad: pago puntual del grupo llamado contra el control.
+    on_time_rate_treatment: float | None = None
+    on_time_rate_control: float | None = None
 

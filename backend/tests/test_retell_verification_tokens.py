@@ -3,6 +3,7 @@ import unittest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from app.core.security import hash_dob
 from app.db.base import Base
 from app.models import Customer
 from app.services import retell
@@ -11,14 +12,14 @@ from app.services.retell import verify_identity
 
 class VerificationTokenTests(unittest.TestCase):
     def setUp(self) -> None:
-        retell._verification_tokens.clear()
         self.engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
         self.customer = Customer(
             external_ref="CUS-TEST",
             preferred_name="Maria",
-            dob="1991-04-12",
+            dob_hash=hash_dob("1991-04-12"),
+            birth_year=1991,
             timezone="America/El_Salvador",
             language="es",
             segment="test",
