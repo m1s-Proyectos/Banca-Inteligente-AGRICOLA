@@ -42,7 +42,7 @@ def main() -> None:
             status="ACTIVE",
             agent_id="demo-agent",
             starts_at=datetime.now(UTC),
-            rules_json={"allowed_window": "09:00-17:00", "max_attempts": 2, "preventive_days": 7},
+            rules_json={"allowed_window": "08:00-18:00", "max_attempts": 2, "preventive_days": 7},
         )
         db.add(campaign)
 
