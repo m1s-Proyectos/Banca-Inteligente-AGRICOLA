@@ -80,7 +80,14 @@ export function App() {
     setWebCallStatus("connecting");
     try {
       const call = await api.webCall(customer.id, obligation.id);
-      await retellWebClient.startCall({ accessToken: call.access_token });
+      // transport y callId son de Retell, no adivinables: los dos tipos de token
+      // son indistinguibles y el gateway direcciona la señalización por llamada.
+      await retellWebClient.startCall({
+        accessToken: call.access_token,
+        transport: call.transport,
+        callId: call.call_id,
+        iceServers: call.ice_servers?.length ? call.ice_servers : undefined
+      });
     } catch (currentError) {
       setWebCallStatus("idle");
       setError(currentError instanceof Error ? currentError.message : "No se pudo iniciar la llamada web");

@@ -360,7 +360,7 @@ async def create_retell_call(db: Session, job: CallJob) -> Call:
     return call
 
 
-async def create_retell_web_call(db: Session, customer_id: str, obligation_id: str) -> dict[str, str]:
+async def create_retell_web_call(db: Session, customer_id: str, obligation_id: str) -> dict[str, Any]:
     customer = db.get(Customer, customer_id)
     obligation = db.get(Obligation, obligation_id)
     contact = db.scalar(
@@ -432,11 +432,20 @@ async def create_retell_web_call(db: Session, customer_id: str, obligation_id: s
 
     call.retell_call_id = call_id
     # Nunca persistir el token efímero que permite entrar a la sala de audio.
-    call.raw_payload = {"call_id": call_id, "call_type": "web_call", "transport": data.get("transport")}
+    transport = data.get("transport")
+    call.raw_payload = {"call_id": call_id, "call_type": "web_call", "transport": transport}
     job.status = "SENT"
     job.attempt_count = 1
     db.commit()
-    return {"call_id": call_id, "access_token": access_token}
+    # transport e ice_servers viajan al navegador tal cual: los dos tokens de
+    # Retell son indistinguibles y el SDK adivinaría "livekit" para uno de
+    # gateway. Los ice_servers traen credenciales TURN atadas a esta llamada.
+    return {
+        "call_id": call_id,
+        "access_token": access_token,
+        "transport": transport,
+        "ice_servers": data.get("ice_servers") or [],
+    }
 
 
 def process_webhook(db: Session, raw_body: bytes, payload: dict[str, Any]) -> dict[str, Any]:

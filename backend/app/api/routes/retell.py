@@ -1,6 +1,6 @@
 import time
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any
 
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -43,7 +43,7 @@ def extract_retell_call_id(body: dict) -> str | None:
 
 
 @router.post("/web-calls")
-async def create_web_call(payload: WebCallRequest, db: DbSession) -> dict[str, str]:
+async def create_web_call(payload: WebCallRequest, db: DbSession) -> dict[str, Any]:
     global _last_web_call_at
     if not settings.fake_data_only:
         raise HTTPException(status_code=403, detail="Web call demo is disabled")

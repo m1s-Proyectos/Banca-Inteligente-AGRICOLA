@@ -57,6 +57,8 @@ export type Call = {
 export type WebCall = {
   call_id: string;
   access_token: string;
+  transport?: "livekit" | "gateway";
+  ice_servers?: RTCIceServer[];
 };
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "/api/v1";

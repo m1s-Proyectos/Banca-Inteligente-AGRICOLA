@@ -74,9 +74,10 @@ No hace falta número ni troncal SIP: el panel abre la llamada por WebRTC desde 
 
 1. En el panel, elegir un cliente y pulsar **Iniciar llamada web**.
 2. El backend crea el `CallJob` + `Call`, pide `POST /v3/create-web-call` a Retell y devuelve
-   `call_id` y `access_token`. El token es efímero y nunca se persiste.
-3. `retell-client-js-sdk` conecta el audio del navegador con ese token; el agente habla y llama a las
-   tools contra el mismo backend.
+   `call_id`, `access_token`, `transport` e `ice_servers`. El token es efímero y nunca se persiste.
+3. `retell-client-js-sdk` conecta el audio del navegador con esos datos; el agente habla y llama a
+   las tools contra el mismo backend. El `transport` viene de Retell y hay que pasarlo tal cual: los
+   tokens de `livekit` y `gateway` son indistinguibles y el SDK asume `livekit` si no se le dice.
 4. Al colgar, el webhook cierra el ciclo y el panel refresca resultados y transcripción.
 
 `POST /api/v1/retell/web-calls` solo responde con `FAKE_DATA_ONLY=true` y tiene un cooldown global de

@@ -39,7 +39,8 @@ class FakeAsyncClient:
             json={
                 "call_id": "call_web_demo",
                 "access_token": "ephemeral-browser-token",
-                "transport": "livekit",
+                "transport": "gateway",
+                "ice_servers": [{"urls": "turn:turn.retellai.com:3478"}],
             },
         )
 
@@ -128,9 +129,16 @@ class RetellWebCallEndpointTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
+        # El navegador necesita transport e ice_servers: los dos tokens de Retell
+        # son indistinguibles y el SDK asumiria livekit para uno de gateway.
         self.assertEqual(
             response.json(),
-            {"call_id": "call_web_demo", "access_token": "ephemeral-browser-token"},
+            {
+                "call_id": "call_web_demo",
+                "access_token": "ephemeral-browser-token",
+                "transport": "gateway",
+                "ice_servers": [{"urls": "turn:turn.retellai.com:3478"}],
+            },
         )
         job = self.db.scalar(select(CallJob))
         call = self.db.scalar(select(Call))
