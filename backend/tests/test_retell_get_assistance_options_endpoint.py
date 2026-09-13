@@ -29,6 +29,7 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         self.customer = self.create_customer("CUS-ASSIST", "Maria")
         self.other_customer = self.create_customer("CUS-OTHER", "Carlos")
         self.customer_without_options = self.create_customer("CUS-NO-OPTIONS", "Ana")
+        self.insurance_customer = self.create_customer("CUS-INSURANCE", "Jose")
 
         self.obligation = Obligation(
             customer_id=self.customer.id,
@@ -52,6 +53,10 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         )
         self.db.add(self.assistance_option)
 
+        # Segunda obligación del mismo cliente, sin opciones configuradas: sirve
+        # para comprobar que obligation_ref selecciona la obligación correcta.
+        self.second_obligation = self.create_obligation(self.customer, "OBL-ASSIST-2", days_ahead=15)
+
         self.no_options_obligation = Obligation(
             customer_id=self.customer_without_options.id,
             external_ref="OBL-NO-OPTIONS",
@@ -62,6 +67,17 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
             status="CURRENT",
         )
         self.db.add(self.no_options_obligation)
+
+        # Cliente cuyo único beneficio activo es el seguro de desempleo.
+        self.insurance_obligation = self.create_obligation(self.insurance_customer, "OBL-INSURANCE", days_ahead=9)
+        self.db.add(
+            AssistanceOption(
+                obligation_id=self.insurance_obligation.id,
+                reschedule_eligible=False,
+                unemployment_insurance_active=True,
+                insurance_instructions="Escalar a asesor humano para validar cobertura de desempleo.",
+            )
+        )
         self.db.commit()
 
         def override_get_db():
@@ -90,6 +106,21 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         self.db.add(customer)
         self.db.flush()
         return customer
+
+    def create_obligation(self, customer: Customer, external_ref: str, days_ahead: int) -> Obligation:
+        obligation = Obligation(
+            customer_id=customer.id,
+            external_ref=external_ref,
+            product_type="loan",
+            # Día calendario del cliente, no el reloj del servidor.
+            next_due_date=datetime.now(ZoneInfo(customer.timezone)).date() + timedelta(days=days_ahead),
+            amount_due=Decimal("125.00"),
+            currency="USD",
+            status="CURRENT",
+        )
+        self.db.add(obligation)
+        self.db.flush()
+        return obligation
 
     def post_assistance(self, payload: dict) -> tuple[int, dict]:
         response = self.client.post("/api/v1/retell/tools/get-assistance-options", json=payload)
@@ -135,31 +166,47 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
 
         self.assertEqual(status_code, 200)
         self.assertTrue(body["authorized"])
-        self.assertEqual(len(body["options"]), 2)
+        # Solo opciones activas: la de seguro inactivo no debe aparecer.
+        self.assertEqual(len(body["options"]), 1)
 
-    def test_valid_options_have_expected_structure(self) -> None:
+    def test_only_active_options_are_listed_with_approved_text(self) -> None:
         token = retell.issue_verification_token(self.db, self.customer.id)
         _, body = self.post_assistance({"customer_ref": self.customer.id, "verification_token": token})
 
-        self.assertEqual(
-            body,
-            {
-                "authorized": True,
-                "options": [
-                    {
-                        "kind": "reschedule",
-                        "eligible": True,
-                        "earliest_new_date": "2026-09-20",
-                        "latest_new_date": "2026-09-30",
-                    },
-                    {
-                        "kind": "unemployment_insurance",
-                        "eligible": False,
-                        "instructions": "",
-                    },
-                ],
-            },
+        self.assertEqual(len(body["options"]), 1)
+        option = body["options"][0]
+        self.assertEqual(option["kind"], "reschedule")
+        self.assertIn("20 de septiembre de 2026", option["text"])
+        self.assertIn("30 de septiembre de 2026", option["text"])
+
+    def test_insurance_only_customer_gets_insurance_option_with_instructions(self) -> None:
+        token = retell.issue_verification_token(self.db, self.insurance_customer.id)
+        _, body = self.post_assistance(
+            {"customer_ref": self.insurance_customer.id, "verification_token": token}
         )
+
+        self.assertEqual(
+            body["options"],
+            [
+                {
+                    "kind": "unemployment_insurance",
+                    "text": "Escalar a asesor humano para validar cobertura de desempleo.",
+                }
+            ],
+        )
+
+    def test_obligation_ref_selects_specific_obligation(self) -> None:
+        token = retell.issue_verification_token(self.db, self.customer.id)
+        _, body = self.post_assistance(
+            {
+                "customer_ref": self.customer.id,
+                "verification_token": token,
+                "obligation_ref": self.second_obligation.id,
+            }
+        )
+
+        # La segunda obligación no tiene opciones configuradas.
+        self.assertEqual(body, {"authorized": True, "options": []})
 
     def test_response_does_not_return_verification_token(self) -> None:
         token = retell.issue_verification_token(self.db, self.customer.id)

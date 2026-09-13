@@ -32,6 +32,12 @@ VERIFICATION_TOKEN_BYTES = 32
 RETELL_SIGNATURE_TOLERANCE_SECONDS = 300
 VERIFICATION_TOKEN_TTL_SECONDS = 900
 
+MONTHS_ES = (
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+)
+
+
 def verification_failed_response() -> dict[str, Any]:
     return {"verified": False, "verification_token": None, "message": ""}
 
@@ -91,6 +97,17 @@ def generate_verification_token() -> str:
 def as_utc(value: datetime) -> datetime:
     """SQLite devuelve datetimes naive aunque la columna sea timezone=True."""
     return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def speakable_date(value: date) -> str:
+    return f"{value.day} de {MONTHS_ES[value.month - 1]} de {value.year}"
+
+
+def resolve_obligation(db: Session, customer_ref: str, obligation_ref: str | None) -> Obligation | None:
+    stmt = select(Obligation).where(Obligation.customer_id == customer_ref)
+    if obligation_ref:
+        stmt = stmt.where(Obligation.id == obligation_ref)
+    return db.scalar(stmt.limit(1))
 
 
 def issue_verification_token(db: Session, customer_ref: str, retell_call_id: str | None = None) -> str:
@@ -154,11 +171,12 @@ def get_assistance_options(
     customer_ref: str,
     verification_token: str,
     retell_call_id: str | None = None,
+    obligation_ref: str | None = None,
 ) -> dict[str, Any]:
     if not is_verification_token_valid(db, customer_ref, verification_token, retell_call_id):
         return {"authorized": False, "options": []}
 
-    obligation = db.scalar(select(Obligation).where(Obligation.customer_id == customer_ref).limit(1))
+    obligation = resolve_obligation(db, customer_ref, obligation_ref)
     if not obligation:
         return {"authorized": True, "options": []}
 
@@ -166,22 +184,25 @@ def get_assistance_options(
     if not option:
         return {"authorized": True, "options": []}
 
-    return {
-        "authorized": True,
-        "options": [
+    # Solo se listan opciones activas y cada una lleva texto aprobado para leerlo
+    # tal cual (guardrail #3 del guion: no mencionar ni inventar opciones no provistas;
+    # una opción inactiva simplemente no aparece).
+    options: list[dict[str, Any]] = []
+    if option.reschedule_eligible and option.earliest_new_date and option.latest_new_date:
+        options.append(
             {
                 "kind": "reschedule",
-                "eligible": option.reschedule_eligible,
-                "earliest_new_date": option.earliest_new_date.isoformat() if option.earliest_new_date else None,
-                "latest_new_date": option.latest_new_date.isoformat() if option.latest_new_date else None,
-            },
-            {
-                "kind": "unemployment_insurance",
-                "eligible": option.unemployment_insurance_active,
-                "instructions": option.insurance_instructions,
-            },
-        ],
-    }
+                "text": (
+                    "Reprogramación del pago: puede elegir una nueva fecha entre el "
+                    f"{speakable_date(option.earliest_new_date)} y el "
+                    f"{speakable_date(option.latest_new_date)}."
+                ),
+            }
+        )
+    if option.unemployment_insurance_active and option.insurance_instructions:
+        options.append({"kind": "unemployment_insurance", "text": option.insurance_instructions})
+
+    return {"authorized": True, "options": options}
 
 
 def request_reschedule(
@@ -190,6 +211,7 @@ def request_reschedule(
     verification_token: str,
     proposed_date: str,
     retell_call_id: str | None = None,
+    obligation_ref: str | None = None,
 ) -> dict[str, Any]:
     if not is_verification_token_valid(db, customer_ref, verification_token, retell_call_id):
         return {"accepted": False, "reason": "not_verified"}
@@ -199,10 +221,24 @@ def request_reschedule(
     except (TypeError, ValueError):
         return {"accepted": False, "reason": "invalid_request"}
 
-    obligation = db.scalar(select(Obligation).where(Obligation.customer_id == customer_ref).limit(1))
+    obligation = resolve_obligation(db, customer_ref, obligation_ref)
     call = db.scalar(select(Call).where(Call.customer_id == customer_ref).order_by(Call.created_at.desc()).limit(1))
     if not obligation or not call:
         return {"accepted": False, "reason": "missing_context"}
+
+    option = db.scalar(select(AssistanceOption).where(AssistanceOption.obligation_id == obligation.id))
+    if not option or not option.reschedule_eligible or not option.earliest_new_date or not option.latest_new_date:
+        return {"accepted": False, "reason": "not_eligible"}
+
+    # Frontera de confianza: el rango de fechas se valida en el backend,
+    # no solo en el prompt del agente.
+    if not option.earliest_new_date <= parsed_proposed_date <= option.latest_new_date:
+        return {
+            "accepted": False,
+            "reason": "out_of_range",
+            "earliest_new_date": option.earliest_new_date.isoformat(),
+            "latest_new_date": option.latest_new_date.isoformat(),
+        }
 
     action = CustomerAction(
         call_id=call.id,

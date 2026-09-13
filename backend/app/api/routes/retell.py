@@ -97,11 +97,18 @@ async def tool_get_assistance_options(
     started_at = datetime.now(UTC)
     customer_ref = args.get("customer_ref")
     verification_token = args.get("verification_token")
+    obligation_ref = args.get("obligation_ref")
     if not customer_ref or not verification_token:
         result = {"authorized": False, "options": []}
         error_code = "missing_fields"
     else:
-        result = get_assistance_options(db, customer_ref, verification_token, retell_call_id)
+        result = get_assistance_options(
+            db,
+            customer_ref,
+            verification_token,
+            retell_call_id=retell_call_id,
+            obligation_ref=obligation_ref,
+        )
         error_code = None if result["authorized"] else "not_verified"
     record_tool_execution(
         db,
@@ -132,10 +139,18 @@ async def tool_request_reschedule(
     customer_ref = args.get("customer_ref")
     verification_token = args.get("verification_token")
     proposed_date = args.get("proposed_date")
+    obligation_ref = args.get("obligation_ref")
     if not customer_ref or not verification_token or not proposed_date:
         result = {"accepted": False, "reason": "invalid_request"}
     else:
-        result = request_reschedule(db, customer_ref, verification_token, proposed_date, retell_call_id)
+        result = request_reschedule(
+            db,
+            customer_ref,
+            verification_token,
+            proposed_date,
+            retell_call_id=retell_call_id,
+            obligation_ref=obligation_ref,
+        )
     record_tool_execution(
         db,
         tool_name="request_reschedule",
