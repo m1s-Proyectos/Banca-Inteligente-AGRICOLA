@@ -9,12 +9,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.core.security import hash_dob
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
 from app.models import Customer
 from app.services import retell
-
 
 RETELL_TEST_SECRET = "retell-test-secret"
 
@@ -39,7 +39,6 @@ class RetellSignatureTests(unittest.TestCase):
         self.original_retell_api_key = retell.settings.retell_api_key
         retell.settings.fake_data_only = False
         retell.settings.retell_api_key = RETELL_TEST_SECRET
-        retell._verification_tokens.clear()
 
         self.engine = create_engine(
             "sqlite://",
@@ -51,7 +50,8 @@ class RetellSignatureTests(unittest.TestCase):
         self.customer = Customer(
             external_ref="CUS-SIGNATURE",
             preferred_name="Maria",
-            dob="1991-04-12",
+            dob_hash=hash_dob("1991-04-12"),
+            birth_year=1991,
             timezone="America/El_Salvador",
             language="es",
             segment="test",
@@ -72,7 +72,6 @@ class RetellSignatureTests(unittest.TestCase):
         self.db.close()
         Base.metadata.drop_all(bind=self.engine)
         self.engine.dispose()
-        retell._verification_tokens.clear()
         retell.settings.fake_data_only = self.original_fake_data_only
         retell.settings.retell_api_key = self.original_retell_api_key
 

@@ -5,6 +5,9 @@ export type Summary = {
   attempted_calls: number;
   successful_calls: number;
   blocked_calls: number;
+  // Resultado, no actividad. null = sin medicion, distinto de 0.
+  on_time_rate_treatment: number | null;
+  on_time_rate_control: number | null;
 };
 
 export type Obligation = {

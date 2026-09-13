@@ -8,6 +8,8 @@ import {
   PhoneCall,
   RefreshCw,
   ShieldCheck,
+  Target,
+  TrendingUp,
   UsersRound
 } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -112,6 +114,18 @@ export function App() {
           <Metric icon={<Clock3 />} label="Pendientes" value={data.summary?.pending_jobs ?? 0} tone="warning" />
           <Metric icon={<PhoneCall />} label="Intentadas" value={data.summary?.attempted_calls ?? 0} tone="secondary" />
           <Metric icon={<CheckCircle2 />} label="Exitosas" value={data.summary?.successful_calls ?? 0} tone="success" />
+          <Metric
+            icon={<TrendingUp />}
+            label="Pago puntual · llamados"
+            value={formatRate(data.summary?.on_time_rate_treatment)}
+            tone="success"
+          />
+          <Metric
+            icon={<Target />}
+            label="Pago puntual · control"
+            value={formatRate(data.summary?.on_time_rate_control)}
+            tone="secondary"
+          />
         </section>
 
         <section className="grid">
@@ -237,7 +251,24 @@ export function App() {
   );
 }
 
-function Metric({ icon, label, value, tone }: { icon: React.ReactNode; label: string; value: number; tone: string }) {
+function formatRate(rate: number | null | undefined) {
+  // null viene del backend cuando no hay resultados de pago cargados: "sin
+  // medicion" no es lo mismo que "nadie pago".
+  if (rate === null || rate === undefined) return "—";
+  return `${Math.round(rate * 100)}%`;
+}
+
+function Metric({
+  icon,
+  label,
+  value,
+  tone
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: number | string;
+  tone: string;
+}) {
   return (
     <article className={`metric ${tone}`}>
       <div>{icon}</div>

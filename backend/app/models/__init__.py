@@ -7,6 +7,9 @@ from app.models.entities import (
     CustomerAction,
     CustomerContact,
     Obligation,
+    PaymentOutcome,
+    ToolExecution,
+    VerificationToken,
     WebhookEvent,
 )
 
@@ -19,6 +22,8 @@ __all__ = [
     "CustomerAction",
     "CustomerContact",
     "Obligation",
+    "PaymentOutcome",
+    "ToolExecution",
+    "VerificationToken",
     "WebhookEvent",
 ]
-
