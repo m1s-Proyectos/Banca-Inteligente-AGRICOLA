@@ -1,17 +1,16 @@
 import unittest
-
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+from unittest.mock import patch
 
 from app.db.base import Base
 from app.models import Customer
 from app.services import retell
 from app.services.retell import verify_identity
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
 
 class VerificationTokenTests(unittest.TestCase):
     def setUp(self) -> None:
-        retell._verification_tokens.clear()
         self.engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(bind=self.engine)
         self.db = Session(self.engine)
@@ -32,6 +31,9 @@ class VerificationTokenTests(unittest.TestCase):
         self.db.close()
         Base.metadata.drop_all(bind=self.engine)
         self.engine.dispose()
+
+    def issue_token(self, customer_id: str | None = None) -> str:
+        return retell.issue_verification_token(customer_id or self.customer.id)
 
     def test_valid_identity_returns_verification_token(self) -> None:
         result = verify_identity(self.db, self.customer.id, "1991-04-12")
@@ -61,6 +63,32 @@ class VerificationTokenTests(unittest.TestCase):
 
         self.assertFalse(result["verified"])
         self.assertIsNone(result["verification_token"])
+
+    def test_issued_token_validates_for_same_customer(self) -> None:
+        token = self.issue_token()
+
+        self.assertTrue(retell.is_verification_token_valid(self.customer.id, token))
+
+    def test_issued_token_rejects_other_customer(self) -> None:
+        token = self.issue_token()
+
+        self.assertFalse(retell.is_verification_token_valid("other-customer", token))
+
+    def test_expired_token_is_rejected(self) -> None:
+        with patch.object(retell, "VERIFICATION_TOKEN_TTL_SECONDS", -60):
+            token = self.issue_token()
+
+        self.assertFalse(retell.is_verification_token_valid(self.customer.id, token))
+
+    def test_tampered_token_is_rejected(self) -> None:
+        token = self.issue_token()
+        tampered = token[:-1] + ("0" if token[-1] != "0" else "1")
+
+        self.assertFalse(retell.is_verification_token_valid(self.customer.id, tampered))
+
+    def test_malformed_token_is_rejected(self) -> None:
+        for candidate in ("", "abc", "123.abc", "123.abc.def.ghi", None):
+            self.assertFalse(retell.is_verification_token_valid(self.customer.id, candidate))
 
 
 if __name__ == "__main__":
