@@ -16,5 +16,7 @@
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["src"]
+  "include": ["src"],
+  "//": "Los *.check.ts los corre node con --experimental-strip-types, no el bundler: chequearlos aca obligaria a instalar @types/node solo para eso.",
+  "exclude": ["src/**/*.check.ts"]
 }

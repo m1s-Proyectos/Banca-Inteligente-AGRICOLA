@@ -23,25 +23,8 @@ import {
 } from "lucide-react";
 import { RetellWebClient } from "retell-client-js-sdk";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { api, Call, CallJob, Customer, Obligation, Summary, ToolExecution, WebhookEvent } from "./lib/api";
-
-type LoadState = {
-  summary: Summary | null;
-  customers: Customer[];
-  jobs: CallJob[];
-  calls: Call[];
-  toolExecutions: ToolExecution[];
-  webhookEvents: WebhookEvent[];
-};
-
-const emptyState: LoadState = {
-  summary: null,
-  customers: [],
-  jobs: [],
-  calls: [],
-  toolExecutions: [],
-  webhookEvents: []
-};
+import { api, Call, CallJob, Customer, Obligation, ToolExecution, WebhookEvent } from "./lib/api";
+import { emptyState, failedSections, LoadState, mergeLoadResults, valueOf } from "./lib/dashboard";
 
 type WebCallStatus = "idle" | "connecting" | "live" | "ended";
 
@@ -92,23 +75,32 @@ export function App() {
 
   async function load() {
     setLoading(true);
-    setError(null);
-    try {
-      const [summary, customers, jobs, calls, toolExecutions, webhookEvents] = await Promise.all([
-        api.summary(),
-        api.customers(),
-        api.jobs(),
-        api.calls(),
-        api.toolExecutions(),
-        api.webhookEvents()
-      ]);
-      setData({ summary, customers, jobs, calls, toolExecutions, webhookEvents });
-      setSelectedCustomerId((current) => current ?? customers[0]?.id ?? null);
-    } catch (currentError) {
-      setError(currentError instanceof Error ? currentError.message : "No se pudo cargar la API");
-    } finally {
-      setLoading(false);
+    // allSettled y no all: el panel lee seis endpoints y con Promise.all uno
+    // solo que falle deja toda la pagina en blanco. Paso de verdad: el frontend
+    // se publica antes que la API, le pide una ruta que el backend viejo
+    // todavia no tiene, y ese 404 de la auditoria de Retell se lleva puestas
+    // tambien las metricas y la cartera. Cada seccion cae por su cuenta.
+    const results = await Promise.allSettled([
+      api.summary(),
+      api.customers(),
+      api.jobs(),
+      api.calls(),
+      api.toolExecutions(),
+      api.webhookEvents()
+    ]);
+
+    setData((current) => mergeLoadResults(results, current));
+
+    const customers = valueOf<Customer[]>(results[1], []);
+    if (customers.length > 0) {
+      setSelectedCustomerId((current) => current ?? customers[0].id);
     }
+
+    const failed = failedSections(results);
+    setError(
+      failed.length > 0 ? `No se pudo cargar ${failed.join(", ")}. El resto del panel sigue actualizado.` : null
+    );
+    setLoading(false);
   }
 
   async function schedule(customer: Customer) {
