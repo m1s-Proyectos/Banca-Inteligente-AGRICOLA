@@ -55,3 +55,5 @@ Configurar el tunel HTTPS hacia `http://localhost:8000` y registrar:
 - `POST /api/v1/retell/tools/request-reschedule`
 
 El worker solo llama a numeros incluidos en `RETELL_ALLOWED_TEST_NUMBERS`.
+
+# Deploy Vercel
