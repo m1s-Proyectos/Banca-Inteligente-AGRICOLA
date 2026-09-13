@@ -1,11 +1,10 @@
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
 
 from app.db.session import SessionLocal
 from app.models import AssistanceOption, Campaign, Customer, CustomerContact, Obligation
-
 
 SCENARIOS = [
     ("María López", "premium", "loan", True, False, "1991-04-12"),
@@ -32,11 +31,11 @@ def main() -> None:
             status="ACTIVE",
             agent_id="demo-agent",
             starts_at=datetime.now(UTC),
-            rules_json={"allowed_window": "09:00-17:00", "max_attempts": 2, "preventive_days": 7},
+            rules_json={"allowed_window": "08:00-18:00", "max_attempts": 2, "preventive_days": 7},
         )
         db.add(campaign)
 
-        today = date.today()
+        today = datetime.now(UTC).date()
         for index, (name, segment, product, reschedule, insurance, dob) in enumerate(SCENARIOS, start=1):
             customer = Customer(
                 external_ref=f"CUS-{index:03d}",
