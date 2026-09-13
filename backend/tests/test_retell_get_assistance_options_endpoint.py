@@ -1,6 +1,7 @@
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -33,7 +34,7 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
             customer_id=self.customer.id,
             external_ref="OBL-ASSIST",
             product_type="loan",
-            next_due_date=date.today() + timedelta(days=7),
+            next_due_date=datetime.now(ZoneInfo(self.customer.timezone)).date() + timedelta(days=7),
             amount_due=Decimal("125.00"),
             currency="USD",
             status="CURRENT",
@@ -55,7 +56,7 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
             customer_id=self.customer_without_options.id,
             external_ref="OBL-NO-OPTIONS",
             product_type="credit_card",
-            next_due_date=date.today() + timedelta(days=5),
+            next_due_date=datetime.now(ZoneInfo(self.customer_without_options.timezone)).date() + timedelta(days=5),
             amount_due=Decimal("80.00"),
             currency="USD",
             status="CURRENT",

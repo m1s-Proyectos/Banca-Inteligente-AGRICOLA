@@ -14,3 +14,6 @@ backend/.coverage
 frontend/.vite/
 postgres-data/
 demo.db
+.zed/
+.codegraph/
+.atl/

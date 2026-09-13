@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 
 from app.models import Call, ToolExecution
 
-
 REDACTED = "[REDACTED]"
 SENSITIVE_KEYS = frozenset({"supplied_dob", "dob", "date_of_birth", "verification_token", "phone", "to_number"})
 

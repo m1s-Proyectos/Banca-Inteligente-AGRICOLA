@@ -1,6 +1,7 @@
 import unittest
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
@@ -12,7 +13,6 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
 from app.models import Call, CallJob, Campaign, Customer, Obligation, WebhookEvent
-from app.services import retell
 
 
 class RetellWebhookEndpointTests(unittest.TestCase):
@@ -52,7 +52,7 @@ class RetellWebhookEndpointTests(unittest.TestCase):
             customer_id=self.customer.id,
             external_ref="OBL-WEBHOOK",
             product_type="loan",
-            next_due_date=date.today() + timedelta(days=7),
+            next_due_date=datetime.now(ZoneInfo(self.customer.timezone)).date() + timedelta(days=7),
             amount_due=Decimal("125.00"),
             currency="USD",
             status="CURRENT",
@@ -170,7 +170,7 @@ class RetellWebhookEndpointTests(unittest.TestCase):
 
         event = self.db.scalar(select(WebhookEvent).where(WebhookEvent.event_type == "custom_event"))
         self.assertEqual(response.status_code, 200)
-        self.assertIsNotNone(event)
+        assert event is not None
         self.assertEqual(event.status, "PROCESSED")
 
     def test_unknown_retell_call_id_records_event_without_creating_call(self) -> None:

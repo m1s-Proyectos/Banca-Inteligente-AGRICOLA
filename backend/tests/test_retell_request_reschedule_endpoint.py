@@ -1,6 +1,7 @@
 import unittest
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
@@ -11,7 +12,14 @@ from app.core.security import hash_dob
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
-from app.models import Call, CallJob, Campaign, Customer, CustomerAction, Obligation
+from app.models import (
+    Call,
+    CallJob,
+    Campaign,
+    Customer,
+    CustomerAction,
+    Obligation,
+)
 from app.services import retell
 
 
@@ -86,11 +94,13 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         return customer
 
     def create_obligation(self, customer_id: str, external_ref: str) -> Obligation:
+        customer = self.db.get(Customer, customer_id)
+        assert customer is not None
         obligation = Obligation(
             customer_id=customer_id,
             external_ref=external_ref,
             product_type="loan",
-            next_due_date=date.today() + timedelta(days=7),
+            next_due_date=datetime.now(ZoneInfo(customer.timezone)).date() + timedelta(days=7),
             amount_due=Decimal("125.00"),
             currency="USD",
             status="CURRENT",
@@ -171,7 +181,7 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         )
 
         action = self.db.scalar(select(CustomerAction).where(CustomerAction.call_id == self.call.id))
-        self.assertIsNotNone(action)
+        assert action is not None
         self.assertEqual(action.obligation_id, self.obligation.id)
         self.assertEqual(action.type, "RESCHEDULE_REQUEST")
         self.assertEqual(action.status, "PENDING_REVIEW")

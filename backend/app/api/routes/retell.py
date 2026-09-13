@@ -1,9 +1,9 @@
 from datetime import UTC, datetime
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Header, HTTPException, Request
 
-from app.db.session import get_db
+from app.db.session import DbSession
 from app.services.audit import record_tool_execution
 from app.services.retell import (
     get_assistance_options,
@@ -33,8 +33,8 @@ def extract_retell_call_id(body: dict) -> str | None:
 @router.post("/webhooks")
 async def retell_webhook(
     request: Request,
-    x_retell_signature: str | None = Header(default=None),
-    db: Session = Depends(get_db),
+    db: DbSession,
+    x_retell_signature: Annotated[str | None, Header()] = None,
 ) -> dict:
     raw_body = await request.body()
     if not verify_retell_signature(raw_body, x_retell_signature):
@@ -51,8 +51,8 @@ async def retell_webhook(
 @router.post("/tools/verify-identity")
 async def tool_verify_identity(
     request: Request,
-    x_retell_signature: str | None = Header(default=None),
-    db: Session = Depends(get_db),
+    db: DbSession,
+    x_retell_signature: Annotated[str | None, Header()] = None,
 ) -> dict:
     raw_body = await request.body()
     if not verify_retell_signature(raw_body, x_retell_signature):
@@ -85,8 +85,8 @@ async def tool_verify_identity(
 @router.post("/tools/get-assistance-options")
 async def tool_get_assistance_options(
     request: Request,
-    x_retell_signature: str | None = Header(default=None),
-    db: Session = Depends(get_db),
+    db: DbSession,
+    x_retell_signature: Annotated[str | None, Header()] = None,
 ) -> dict:
     raw_body = await request.body()
     if not verify_retell_signature(raw_body, x_retell_signature):
@@ -119,8 +119,8 @@ async def tool_get_assistance_options(
 @router.post("/tools/request-reschedule")
 async def tool_request_reschedule(
     request: Request,
-    x_retell_signature: str | None = Header(default=None),
-    db: Session = Depends(get_db),
+    db: DbSession,
+    x_retell_signature: Annotated[str | None, Header()] = None,
 ) -> dict:
     raw_body = await request.body()
     if not verify_retell_signature(raw_body, x_retell_signature):

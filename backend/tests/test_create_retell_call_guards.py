@@ -4,13 +4,14 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
+
 from app.core.security import hash_dob
 from app.db.base import Base
 from app.models import CallJob, Campaign, Customer, Obligation
 from app.services.retell import build_dynamic_variables, create_retell_call
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
 
 class CreateRetellCallGuardTests(unittest.TestCase):
@@ -89,6 +90,7 @@ class CreateRetellCallGuardTests(unittest.TestCase):
         self.assertEqual(call.status, "BLOCKED")
         self.assertEqual(call.outcome, "BLOCKED_OVERDUE")
         self.assertEqual(job.status, "BLOCKED")
+        assert job.last_error is not None
         self.assertIn("vencida", job.last_error)
 
     def test_due_today_is_not_blocked_by_overdue_guard(self) -> None:

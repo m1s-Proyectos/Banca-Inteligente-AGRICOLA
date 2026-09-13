@@ -1,12 +1,21 @@
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
 from app.core.security import hash_dob
 from app.db.session import SessionLocal
-from app.models import AssistanceOption, Campaign, Customer, CustomerContact, Obligation, PaymentOutcome
+from app.models import (
+    AssistanceOption,
+    Campaign,
+    Customer,
+    CustomerContact,
+    Obligation,
+    PaymentOutcome,
+)
 
+CUSTOMER_TIMEZONE = "America/El_Salvador"
 
 SCENARIOS = [
     ("María López", "premium", "loan", True, False, "1991-04-12"),
@@ -37,14 +46,14 @@ def main() -> None:
         )
         db.add(campaign)
 
-        today = date.today()
+        today = datetime.now(ZoneInfo(CUSTOMER_TIMEZONE)).date()
         for index, (name, segment, product, reschedule, insurance, dob) in enumerate(SCENARIOS, start=1):
             customer = Customer(
                 external_ref=f"CUS-{index:03d}",
                 preferred_name=name,
                 dob_hash=hash_dob(dob),
                 birth_year=int(dob[:4]),
-                timezone="America/El_Salvador",
+                timezone=CUSTOMER_TIMEZONE,
                 language="es",
                 segment=segment,
                 status="ACTIVE",

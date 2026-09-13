@@ -1,6 +1,7 @@
 import unittest
-from datetime import date, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -39,11 +40,12 @@ class PaymentMetricsTests(unittest.TestCase):
         return customer
 
     def add_outcomes(self, customer: Customer, statuses: list[str]) -> None:
+        today = datetime.now(ZoneInfo(customer.timezone)).date()
         obligation = Obligation(
             customer_id=customer.id,
             external_ref=f"OBL-{customer.external_ref}",
             product_type="loan",
-            next_due_date=date.today() + timedelta(days=7),
+            next_due_date=today + timedelta(days=7),
             amount_due=Decimal("100.00"),
             currency="USD",
             status="CURRENT",
@@ -54,7 +56,7 @@ class PaymentMetricsTests(unittest.TestCase):
             self.db.add(
                 PaymentOutcome(
                     obligation_id=obligation.id,
-                    due_date=date.today() - timedelta(days=30 * (index + 1)),
+                    due_date=today - timedelta(days=30 * (index + 1)),
                     status=status,
                     source_batch_id="test",
                 )

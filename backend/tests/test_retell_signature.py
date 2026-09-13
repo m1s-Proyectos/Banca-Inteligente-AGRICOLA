@@ -16,7 +16,6 @@ from app.main import app
 from app.models import Customer
 from app.services import retell
 
-
 RETELL_TEST_SECRET = "retell-test-secret"
 
 

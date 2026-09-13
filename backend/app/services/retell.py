@@ -1,7 +1,7 @@
 import hashlib
 import hmac
-import time
 import secrets
+import time
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -11,9 +11,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.security import dob_matches, normalize_dob  # noqa: F401  (normalize_dob se reexporta)
-from app.services.audit import resolve_internal_call_id
-
+from app.core.security import (
+    dob_matches,
+    normalize_dob,  # noqa: F401  (normalize_dob se reexporta)
+)
 from app.models import (
     AssistanceOption,
     Call,
@@ -25,7 +26,7 @@ from app.models import (
     VerificationToken,
     WebhookEvent,
 )
-
+from app.services.audit import resolve_internal_call_id
 
 VERIFICATION_TOKEN_BYTES = 32
 RETELL_SIGNATURE_TOLERANCE_SECONDS = 300
@@ -121,9 +122,11 @@ def is_verification_token_valid(
     # ponytail: la llamada se compara solo cuando ambos lados la conocen. Retell no
     # siempre manda call_id en las Custom Functions, y rechazar por ausencia romperia
     # el flujo real. Upgrade: exigirlo cuando se confirme que el payload lo incluye.
-    if record.retell_call_id and retell_call_id and record.retell_call_id != retell_call_id:
-        return False
-    return True
+    return not (
+        record.retell_call_id
+        and retell_call_id
+        and record.retell_call_id != retell_call_id
+    )
 
 
 def verify_identity(

@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 from app.core.security import hash_dob
 from app.db.base import Base
 from app.models import Customer
-from app.services import retell
 from app.services.retell import verify_identity
 
 
