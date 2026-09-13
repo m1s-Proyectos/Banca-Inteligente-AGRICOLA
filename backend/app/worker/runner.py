@@ -88,8 +88,9 @@ async def claim_and_process_once() -> bool:
 
         await create_retell_call(db, job)
         return True
-    # El worker debe sobrevivir a cualquier fallo del trabajo y dejarlo registrado.
     except Exception as exc:  # noqa: BLE001
+        # ponytail: el worker debe sobrevivir fallos inesperados por trabajo.
+        # Upgrade: clasificar errores reintentables cuando exista una politica de reintentos.
         db.rollback()
         if job:
             job.status = "FAILED"

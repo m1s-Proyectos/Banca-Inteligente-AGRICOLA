@@ -1,22 +1,30 @@
 import unittest
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.core.security import hash_dob
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
-from app.models import Call, CallJob, Campaign, Customer, CustomerAction, Obligation
+from app.models import (
+    Call,
+    CallJob,
+    Campaign,
+    Customer,
+    CustomerAction,
+    Obligation,
+)
 from app.services import retell
 
 
 class RequestRescheduleEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
-        retell._verification_tokens.clear()
         self.engine = create_engine(
             "sqlite://",
             connect_args={"check_same_thread": False},
@@ -69,13 +77,13 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         self.db.close()
         Base.metadata.drop_all(bind=self.engine)
         self.engine.dispose()
-        retell._verification_tokens.clear()
 
     def create_customer(self, external_ref: str, name: str) -> Customer:
         customer = Customer(
             external_ref=external_ref,
             preferred_name=name,
-            dob="1991-04-12",
+            dob_hash=hash_dob("1991-04-12"),
+            birth_year=1991,
             timezone="America/El_Salvador",
             language="es",
             segment="test",
@@ -86,11 +94,13 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         return customer
 
     def create_obligation(self, customer_id: str, external_ref: str) -> Obligation:
+        customer = self.db.get(Customer, customer_id)
+        assert customer is not None
         obligation = Obligation(
             customer_id=customer_id,
             external_ref=external_ref,
             product_type="loan",
-            next_due_date=date.today() + timedelta(days=7),
+            next_due_date=datetime.now(ZoneInfo(customer.timezone)).date() + timedelta(days=7),
             amount_due=Decimal("125.00"),
             currency="USD",
             status="CURRENT",
@@ -104,7 +114,7 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         return response.status_code, response.json()
 
     def test_valid_token_accepts_request(self) -> None:
-        token = retell.issue_verification_token(self.customer.id)
+        token = retell.issue_verification_token(self.db, self.customer.id)
         status_code, body = self.post_reschedule(
             {"customer_ref": self.customer.id, "verification_token": token, "proposed_date": "2026-09-20"}
         )
@@ -121,7 +131,7 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         self.assertEqual(body, {"accepted": False, "reason": "not_verified"})
 
     def test_token_for_other_customer_rejects_request(self) -> None:
-        token = retell.issue_verification_token(self.other_customer.id)
+        token = retell.issue_verification_token(self.db, self.other_customer.id)
         status_code, body = self.post_reschedule(
             {"customer_ref": self.customer.id, "verification_token": token, "proposed_date": "2026-09-20"}
         )
@@ -130,7 +140,7 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         self.assertEqual(body, {"accepted": False, "reason": "not_verified"})
 
     def test_missing_customer_ref_returns_manageable_response(self) -> None:
-        token = retell.issue_verification_token(self.customer.id)
+        token = retell.issue_verification_token(self.db, self.customer.id)
         status_code, body = self.post_reschedule(
             {"verification_token": token, "proposed_date": "2026-09-20"}
         )
@@ -147,7 +157,7 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         self.assertEqual(body, {"accepted": False, "reason": "invalid_request"})
 
     def test_missing_proposed_date_returns_manageable_response(self) -> None:
-        token = retell.issue_verification_token(self.customer.id)
+        token = retell.issue_verification_token(self.db, self.customer.id)
         status_code, body = self.post_reschedule(
             {"customer_ref": self.customer.id, "verification_token": token}
         )
@@ -156,7 +166,7 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         self.assertEqual(body, {"accepted": False, "reason": "invalid_request"})
 
     def test_args_wrapper_format_works(self) -> None:
-        token = retell.issue_verification_token(self.customer.id)
+        token = retell.issue_verification_token(self.db, self.customer.id)
         status_code, body = self.post_reschedule(
             {"args": {"customer_ref": self.customer.id, "verification_token": token, "proposed_date": "2026-09-20"}}
         )
@@ -165,20 +175,20 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         self.assertEqual(body, {"accepted": True, "status": "PENDING_REVIEW"})
 
     def test_valid_proposal_creates_customer_action(self) -> None:
-        token = retell.issue_verification_token(self.customer.id)
+        token = retell.issue_verification_token(self.db, self.customer.id)
         self.post_reschedule(
             {"customer_ref": self.customer.id, "verification_token": token, "proposed_date": "2026-09-20"}
         )
 
         action = self.db.scalar(select(CustomerAction).where(CustomerAction.call_id == self.call.id))
-        self.assertIsNotNone(action)
+        assert action is not None
         self.assertEqual(action.obligation_id, self.obligation.id)
         self.assertEqual(action.type, "RESCHEDULE_REQUEST")
         self.assertEqual(action.status, "PENDING_REVIEW")
         self.assertEqual(action.proposed_date, date(2026, 9, 20))
 
     def test_missing_call_returns_safe_response_without_exception(self) -> None:
-        token = retell.issue_verification_token(self.customer_without_call.id)
+        token = retell.issue_verification_token(self.db, self.customer_without_call.id)
         status_code, body = self.post_reschedule(
             {"customer_ref": self.customer_without_call.id, "verification_token": token, "proposed_date": "2026-09-20"}
         )
@@ -187,7 +197,7 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         self.assertEqual(body, {"accepted": False, "reason": "missing_context"})
 
     def test_response_never_returns_verification_token(self) -> None:
-        token = retell.issue_verification_token(self.customer.id)
+        token = retell.issue_verification_token(self.db, self.customer.id)
         _, success_body = self.post_reschedule(
             {"customer_ref": self.customer.id, "verification_token": token, "proposed_date": "2026-09-20"}
         )
@@ -199,7 +209,7 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         self.assertNotIn("verification_token", failure_body)
 
     def test_invalid_proposed_date_returns_manageable_response(self) -> None:
-        token = retell.issue_verification_token(self.customer.id)
+        token = retell.issue_verification_token(self.db, self.customer.id)
         status_code, body = self.post_reschedule(
             {"customer_ref": self.customer.id, "verification_token": token, "proposed_date": "not-a-date"}
         )
