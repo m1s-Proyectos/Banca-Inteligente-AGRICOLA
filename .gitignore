@@ -18,4 +18,8 @@ demo.db
 .codegraph/
 .atl/
 .cursor/
+.codex/
+.claude/
+.agents/
+.pi/
 .mcp.json

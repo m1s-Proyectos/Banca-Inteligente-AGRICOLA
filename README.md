@@ -56,4 +56,21 @@ Configurar el tunel HTTPS hacia `http://localhost:8000` y registrar:
 
 El worker solo llama a numeros incluidos en `RETELL_ALLOWED_TEST_NUMBERS`.
 
-# Deploy Vercel
+## Deploy
+
+### Render
+
+`render.yaml` defines Postgres, the FastAPI service, the call worker, and the static dashboard.
+
+1. In the [Render Dashboard](https://dashboard.render.com/), create a Blueprint from this repo (`m1s-Proyectos/Banca-Inteligente-AGRICOLA`).
+2. Set the API secrets when prompted: `RETELL_API_KEY`, `RETELL_AGENT_ID`, `RETELL_FROM_NUMBER`, `RETELL_ALLOWED_TEST_NUMBERS`.
+3. After the API has a public URL, set the dashboard `VITE_API_URL` to `https://<api-host>/api/v1` and add that origin to `CORS_ORIGINS` / `cors_origins` if the panel cannot call the API.
+4. Point Retell webhooks at `https://<api-host>/api/v1/retell/webhooks` (and the tool URLs).
+
+Postgres uses `basic-256mb` (paid; the workspace needs a payment method). The API, worker, and static site stay on the free instance type.
+
+Validate locally (Render CLI already authenticated):
+
+```bash
+render blueprints validate
+```
