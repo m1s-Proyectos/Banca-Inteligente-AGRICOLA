@@ -436,6 +436,31 @@ dd {
   box-shadow: none;
 }
 
+.callActions {
+  display: grid;
+  gap: 8px;
+}
+
+.customerFocus .endCall {
+  background: var(--danger);
+  color: var(--white);
+  box-shadow: none;
+}
+
+.customerFocus .audioButton {
+  height: 38px;
+  border: 1px solid var(--gray-200);
+  background: var(--white);
+  color: var(--blue);
+  box-shadow: none;
+}
+
+.callStatus {
+  color: var(--gray-500);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .tables {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

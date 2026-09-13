@@ -1,7 +1,11 @@
 import unittest
+from asyncio import Event
 from datetime import datetime, time
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+from app.core.config import settings
+from app.main import app, lifespan
 from app.worker.runner import (
     DEFAULT_CALL_WINDOW,
     inside_call_window,
@@ -62,6 +66,23 @@ class NextCallWindowStartTests(unittest.TestCase):
         slot = next_call_window_start(datetime(2026, 9, 12, 12, 0, tzinfo=TZ), time(8, 0))
         self.assertEqual(slot, datetime(2026, 9, 14, 8, 0, tzinfo=TZ))
 
+
+class WorkerLifespanTests(unittest.IsolatedAsyncioTestCase):
+    async def test_worker_can_share_the_web_process_for_the_mvp(self) -> None:
+        original = settings.run_worker_in_web
+        started = Event()
+
+        async def fake_worker() -> None:
+            started.set()
+            await Event().wait()
+
+        settings.run_worker_in_web = True
+        try:
+            with patch("app.worker.runner.main", fake_worker):
+                async with lifespan(app):
+                    await started.wait()
+        finally:
+            settings.run_worker_in_web = original
 
 if __name__ == "__main__":
     unittest.main()

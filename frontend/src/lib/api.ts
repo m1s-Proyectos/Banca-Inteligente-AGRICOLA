@@ -54,6 +54,13 @@ export type Call = {
   created_at: string;
 };
 
+export type WebCall = {
+  call_id: string;
+  access_token: string;
+  transport?: "livekit" | "gateway";
+  ice_servers?: RTCIceServer[];
+};
+
 const API_BASE = import.meta.env.VITE_API_URL ?? "/api/v1";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -72,10 +79,14 @@ export const api = {
   customers: () => request<Customer[]>("/customers"),
   jobs: () => request<CallJob[]>("/call-jobs"),
   calls: () => request<Call[]>("/calls"),
+  webCall: (customerId: string, obligationId: string) =>
+    request<WebCall>("/retell/web-calls", {
+      method: "POST",
+      body: JSON.stringify({ customer_id: customerId, obligation_id: obligationId })
+    }),
   schedule: (customerId: string, obligationId: string) =>
     request<CallJob>("/call-jobs", {
       method: "POST",
       body: JSON.stringify({ customer_id: customerId, obligation_id: obligationId })
     })
 };
-

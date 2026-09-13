@@ -240,6 +240,33 @@ class RequestRescheduleEndpointTests(unittest.TestCase):
         self.assertEqual(action.status, "PENDING_REVIEW")
         self.assertEqual(action.proposed_date, date(2026, 9, 20))
 
+    def test_action_is_attached_to_the_live_call_not_the_newest_one(self) -> None:
+        newer_job = self.create_call_job(self.customer.id, self.obligation.id)
+        newer_call = self.create_call(newer_job.id, self.customer.id)
+        # La llamada viva es la mas antigua: sin el filtro por retell_call_id el
+        # fallback por created_at elegiria la otra.
+        self.call.created_at = datetime.now(UTC) - timedelta(minutes=5)
+        newer_call.created_at = datetime.now(UTC)
+        self.call.retell_call_id = "call_live"
+        self.db.commit()
+        token = retell.issue_verification_token(self.db, self.customer.id, "call_live")
+
+        self.post_reschedule(
+            {
+                "call": {"call_id": "call_live"},
+                "args": {
+                    "customer_ref": self.customer.id,
+                    "verification_token": token,
+                    "proposed_date": "2026-09-20",
+                },
+            }
+        )
+
+        action = self.db.scalar(select(CustomerAction))
+        assert action is not None
+        self.assertEqual(action.call_id, self.call.id)
+        self.assertNotEqual(action.call_id, newer_call.id)
+
     def test_date_outside_approved_range_is_rejected_with_bounds(self) -> None:
         token = retell.issue_verification_token(self.db, self.customer.id)
         status_code, body = self.post_reschedule(

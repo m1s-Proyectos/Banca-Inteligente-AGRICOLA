@@ -3,7 +3,7 @@ databases:
   - name: banca-inteligente-db
     databaseName: collections
     user: app
-    plan: basic-256mb
+    plan: free
     region: oregon
 
 envVarGroups:
@@ -38,59 +38,16 @@ services:
         sync: false
       - key: RETELL_AGENT_ID
         sync: false
+      - key: RETELL_AGENT_VERSION
+        value: "1"
+      - key: RETELL_REQUIRE_SIGNATURE
+        value: "true"
+      - key: RUN_WORKER_IN_WEB
+        value: "true"
       - key: RETELL_FROM_NUMBER
         sync: false
       - key: RETELL_ALLOWED_TEST_NUMBERS
         sync: false
-
-  - type: worker
-    name: banca-inteligente-worker
-    runtime: docker
-    plan: free
-    region: oregon
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
-    dockerCommand: python -m app.worker.runner
-    autoDeployTrigger: commit
-    buildFilter:
-      paths:
-        - backend/**
-    envVars:
-      - fromGroup: banca-inteligente-shared
-      - key: DATABASE_URL
-        fromDatabase:
-          name: banca-inteligente-db
-          property: connectionString
-      - key: PUBLIC_BASE_URL
-        fromService:
-          name: banca-inteligente-api
-          type: web
-          envVarKey: RENDER_EXTERNAL_URL
-      - key: APP_SECRET
-        fromService:
-          name: banca-inteligente-api
-          type: web
-          envVarKey: APP_SECRET
-      - key: RETELL_API_KEY
-        fromService:
-          name: banca-inteligente-api
-          type: web
-          envVarKey: RETELL_API_KEY
-      - key: RETELL_AGENT_ID
-        fromService:
-          name: banca-inteligente-api
-          type: web
-          envVarKey: RETELL_AGENT_ID
-      - key: RETELL_FROM_NUMBER
-        fromService:
-          name: banca-inteligente-api
-          type: web
-          envVarKey: RETELL_FROM_NUMBER
-      - key: RETELL_ALLOWED_TEST_NUMBERS
-        fromService:
-          name: banca-inteligente-api
-          type: web
-          envVarKey: RETELL_ALLOWED_TEST_NUMBERS
 
   - type: web
     name: banca-inteligente-web

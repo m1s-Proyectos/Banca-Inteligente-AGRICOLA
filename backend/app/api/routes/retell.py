@@ -1,11 +1,16 @@
+import time
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Any
 
+import httpx
 from fastapi import APIRouter, Header, HTTPException, Request
+from pydantic import BaseModel
 
+from app.core.config import settings
 from app.db.session import DbSession
 from app.services.audit import record_tool_execution
 from app.services.retell import (
+    create_retell_web_call,
     get_assistance_options,
     process_webhook,
     request_reschedule,
@@ -14,6 +19,13 @@ from app.services.retell import (
 )
 
 router = APIRouter(tags=["retell"])
+WEB_CALL_COOLDOWN_SECONDS = 10
+_last_web_call_at = 0.0
+
+
+class WebCallRequest(BaseModel):
+    customer_id: str
+    obligation_id: str
 
 
 def extract_retell_args(body: dict) -> dict:
@@ -28,6 +40,29 @@ def extract_retell_call_id(body: dict) -> str | None:
         return str(call["call_id"])
     call_id = body.get("call_id")
     return str(call_id) if call_id else None
+
+
+@router.post("/web-calls")
+async def create_web_call(payload: WebCallRequest, db: DbSession) -> dict[str, Any]:
+    global _last_web_call_at
+    if not settings.fake_data_only:
+        raise HTTPException(status_code=403, detail="Web call demo is disabled")
+
+    now = time.monotonic()
+    # ponytail: un solo proceso Render y cooldown global bastan para el MVP.
+    # Techo: no coordina réplicas; migrar a auth + rate limit compartido antes de producción.
+    if now - _last_web_call_at < WEB_CALL_COOLDOWN_SECONDS:
+        raise HTTPException(status_code=429, detail="Espere unos segundos antes de iniciar otra llamada")
+    _last_web_call_at = now
+
+    try:
+        return await create_retell_web_call(db, payload.customer_id, payload.obligation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Retell no pudo crear la llamada web") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("/webhooks")
@@ -162,4 +197,3 @@ async def tool_request_reschedule(
         error_code=None if result["accepted"] else result.get("reason"),
     )
     return result
-
