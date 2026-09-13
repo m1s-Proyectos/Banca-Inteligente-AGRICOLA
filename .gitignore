@@ -14,3 +14,7 @@ backend/.coverage
 frontend/.vite/
 postgres-data/
 demo.db
+# Local Pi runtime state
+.atl/
+.codegraph/
+.zed/
