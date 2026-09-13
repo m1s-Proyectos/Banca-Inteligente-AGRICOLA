@@ -1,0 +1,191 @@
+import hashlib
+import hmac
+from datetime import UTC, date, datetime
+from typing import Any
+
+import httpx
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.core.config import settings
+from app.models import AssistanceOption, Call, CallJob, Customer, CustomerAction, CustomerContact, Obligation, WebhookEvent
+
+
+def verify_retell_signature(raw_body: bytes, signature: str | None) -> bool:
+    if not signature:
+        return settings.fake_data_only
+    digest = hmac.new(settings.retell_api_key.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(digest, signature)
+
+
+def payload_hash(raw_body: bytes) -> str:
+    return hashlib.sha256(raw_body).hexdigest()
+
+
+def normalize_dob(value: str) -> str:
+    return value.strip().replace("/", "-")
+
+
+def verify_identity(db: Session, customer_ref: str, supplied_dob: str) -> dict[str, Any]:
+    customer = db.scalar(select(Customer).where(Customer.id == customer_ref))
+    if not customer:
+        return {"verified": False, "reason": "customer_not_found"}
+
+    verified = normalize_dob(customer.dob) == normalize_dob(supplied_dob)
+    return {
+        "verified": verified,
+        "verification_token": f"verified:{customer.id}" if verified else None,
+        "message": "Identidad verificada" if verified else "La fecha no coincide",
+    }
+
+
+def get_assistance_options(db: Session, customer_ref: str, verification_token: str) -> dict[str, Any]:
+    if verification_token != f"verified:{customer_ref}":
+        return {"authorized": False, "options": []}
+
+    obligation = db.scalar(select(Obligation).where(Obligation.customer_id == customer_ref).limit(1))
+    if not obligation:
+        return {"authorized": True, "options": []}
+
+    option = db.scalar(select(AssistanceOption).where(AssistanceOption.obligation_id == obligation.id))
+    if not option:
+        return {"authorized": True, "options": []}
+
+    return {
+        "authorized": True,
+        "options": [
+            {
+                "kind": "reschedule",
+                "eligible": option.reschedule_eligible,
+                "earliest_new_date": option.earliest_new_date.isoformat() if option.earliest_new_date else None,
+                "latest_new_date": option.latest_new_date.isoformat() if option.latest_new_date else None,
+            },
+            {
+                "kind": "unemployment_insurance",
+                "eligible": option.unemployment_insurance_active,
+                "instructions": option.insurance_instructions,
+            },
+        ],
+    }
+
+
+def request_reschedule(db: Session, customer_ref: str, verification_token: str, proposed_date: str) -> dict[str, Any]:
+    if verification_token != f"verified:{customer_ref}":
+        return {"accepted": False, "reason": "not_verified"}
+
+    obligation = db.scalar(select(Obligation).where(Obligation.customer_id == customer_ref).limit(1))
+    call = db.scalar(select(Call).where(Call.customer_id == customer_ref).order_by(Call.created_at.desc()).limit(1))
+    if not obligation or not call:
+        return {"accepted": False, "reason": "missing_context"}
+
+    action = CustomerAction(
+        call_id=call.id,
+        obligation_id=obligation.id,
+        type="RESCHEDULE_REQUEST",
+        proposed_date=date.fromisoformat(proposed_date),
+        status="PENDING_REVIEW",
+    )
+    db.add(action)
+    db.commit()
+    return {"accepted": True, "status": "PENDING_REVIEW"}
+
+
+async def create_retell_call(db: Session, job: CallJob) -> Call:
+    contact = db.scalar(select(CustomerContact).where(CustomerContact.customer_id == job.customer_id, CustomerContact.is_primary.is_(True)))
+    customer = db.get(Customer, job.customer_id)
+    obligation = db.get(Obligation, job.obligation_id)
+    call = Call(call_job_id=job.id, customer_id=job.customer_id, status="REGISTERED", outcome="PENDING")
+    db.add(call)
+
+    if not contact or contact.do_not_call or contact.consent_status != "OPTED_IN":
+        call.status = "BLOCKED"
+        call.outcome = "BLOCKED_BY_CONSENT"
+        job.status = "BLOCKED"
+        job.last_error = "Cliente sin consentimiento o en lista no llamar"
+        db.commit()
+        return call
+
+    if contact.phone_e164 not in settings.allowed_numbers:
+        call.status = "BLOCKED"
+        call.outcome = "BLOCKED_BY_ALLOWLIST"
+        job.status = "BLOCKED"
+        job.last_error = "Telefono fuera de RETELL_ALLOWED_TEST_NUMBERS"
+        db.commit()
+        return call
+
+    if not settings.retell_api_key or not settings.retell_agent_id or not settings.retell_from_number:
+        call.status = "SIMULATED"
+        call.outcome = "SIMULATED_NO_RETELL_CREDENTIALS"
+        call.summary = "Llamada simulada: faltan credenciales Retell."
+        job.status = "SIMULATED"
+        db.commit()
+        return call
+
+    payload = {
+        "from_number": settings.retell_from_number,
+        "to_number": contact.phone_e164,
+        "override_agent_id": settings.retell_agent_id,
+        "retell_llm_dynamic_variables": {
+            "customer_ref": customer.id,
+            "preferred_name": customer.preferred_name,
+            "next_due_date": obligation.next_due_date.isoformat(),
+            "language": customer.language,
+            "timezone": customer.timezone,
+        },
+        "metadata": {"call_job_id": job.id, "customer_id": customer.id},
+    }
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.post(
+            "https://api.retellai.com/v2/create-phone-call",
+            json=payload,
+            headers={"Authorization": f"Bearer {settings.retell_api_key}"},
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    call.retell_call_id = data.get("call_id")
+    call.raw_payload = data
+    job.status = "SENT"
+    job.attempt_count += 1
+    db.commit()
+    db.refresh(call)
+    return call
+
+
+def process_webhook(db: Session, raw_body: bytes, payload: dict[str, Any]) -> dict[str, Any]:
+    current_hash = payload_hash(raw_body)
+    existing_event = db.scalar(select(WebhookEvent).where(WebhookEvent.payload_hash == current_hash))
+    if existing_event:
+        return {"ok": True, "duplicate": True}
+
+    event = payload.get("event", "unknown")
+    call_payload = payload.get("call", {})
+    retell_call_id = call_payload.get("call_id")
+    event_record = WebhookEvent(
+        retell_call_id=retell_call_id,
+        event_type=event,
+        payload_hash=current_hash,
+        payload_redacted=payload,
+        status="RECEIVED",
+    )
+    db.add(event_record)
+
+    call = db.scalar(select(Call).where(Call.retell_call_id == retell_call_id)) if retell_call_id else None
+    if call:
+        call.status = call_payload.get("call_status", call.status).upper()
+        call.disconnect_reason = call_payload.get("disconnection_reason")
+        call.transcript = call_payload.get("transcript") or call.transcript
+        call.recording_url = call_payload.get("recording_url") or call.recording_url
+        analysis = call_payload.get("post_call_analysis_data") or {}
+        call.summary = analysis.get("call_summary") or call.summary
+        call.sentiment = analysis.get("user_sentiment") or call.sentiment
+        call.call_successful = bool(analysis.get("call_successful", call.call_successful))
+        call.outcome = "VERIFIED_REMINDER_DELIVERED" if call.call_successful else call.outcome
+        if event in {"call_ended", "call_analyzed"}:
+            call.ended_at = datetime.now(UTC)
+
+    event_record.status = "PROCESSED"
+    event_record.processed_at = datetime.now(UTC)
+    db.commit()
+    return {"ok": True}

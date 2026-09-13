@@ -1,0 +1,630 @@
+# Plan de trabajo: cobranza preventiva por llamadas con Retell
+
+## 1. Alcance del MVP
+
+La solución permitirá:
+
+1. Importar clientes y obligaciones desde el banco o una fuente simulada.
+2. Programar llamadas según reglas configurables.
+3. Ejecutar conversaciones mediante un agente de voz de Retell.
+4. Consultar información adicional del cliente durante la llamada, únicamente cuando sea necesaria.
+5. Consolidar resultados, transcripciones, grabaciones, sentimiento, métricas y auditoría en un panel de control.
+
+El MVP será un **monolito modular**, no un conjunto de microservicios: una aplicación web, un backend, un trabajador de llamadas, PostgreSQL y almacenamiento de archivos. Es suficiente para la hackathon y permite separar servicios posteriormente si el volumen lo exige.
+
+---
+
+## 2. Viabilidad del requisito de consultas al backend
+
+**Sí, el requisito #5 es posible con Retell.**
+
+Al crear una llamada, el backend puede pasar variables específicas mediante `retell_llm_dynamic_variables`. Todos sus valores deben enviarse como texto. Durante la conversación, Retell puede ejecutar **Custom Functions** que llaman endpoints HTTP del backend; la solicitud puede incluir el identificador de la llamada, metadata y la transcripción acumulada hasta ese momento. La respuesta puede convertirse en nuevas variables para continuar la conversación. [Variables dinámicas de Retell](https://docs.retellai.com/build/dynamic-variables) y [Custom Functions](https://docs.retellai.com/build/conversation-flow/custom-function).
+
+### Información inicial recomendada
+
+```json
+{
+  "customer_ref": "cus_01J...",
+  "preferred_name": "María",
+  "next_due_date": "2026-09-20",
+  "language": "es",
+  "timezone": "America/El_Salvador"
+}
+```
+
+El teléfono se envía como `to_number`; no necesita duplicarse como variable.
+
+### Cambio de seguridad recomendado
+
+Aunque el requerimiento propone enviar la fecha de nacimiento al agente, en producción conviene **no incluir la fecha completa en variables dinámicas ni metadata**, porque Retell advierte que esos valores quedan almacenados en texto plano en el registro de la llamada.
+
+El flujo seguro sería:
+
+1. El agente solicita al cliente su fecha de nacimiento.
+2. Ejecuta `verify_identity(customer_ref, supplied_dob)`.
+3. El backend compara el valor con la fecha cifrada.
+4. Devuelve solamente `verified: true/false` y un token corto ligado a esa llamada.
+5. Solo con ese token se permite consultar reprogramación, seguros u otros datos.
+
+La fecha, números de cuenta, saldo detallado y datos del seguro permanecen en el backend.
+
+---
+
+## 3. Arquitectura propuesta
+
+```text
+Base del banco / CSV / fake data
+              │
+              ▼
+     API de importación y validación
+              │
+              ▼
+          PostgreSQL
+              │
+       ┌──────┴────────┐
+       ▼               ▼
+Programador        Backend/API ───────────► Panel web
+de llamadas             ▲
+       │                 │ Custom Functions
+       ▼                 │
+Worker ─────────────► Retell ─────────────► Cliente
+                         │
+                         │ Webhooks
+                         ▼
+               Registro de llamadas
+                         │
+          Grabaciones / logs / transcripciones
+```
+
+### Componentes
+
+- **Backend:** reglas, programación, identidad, opciones de asistencia, webhooks y API del panel.
+- **Worker:** reclama trabajos pendientes, valida reglas y solicita a Retell la llamada.
+- **PostgreSQL:** fuente operativa del panel, historial y auditoría.
+- **Almacenamiento de objetos:** grabaciones, transcripciones exportadas y logs.
+- **Retell Conversation Flow:** conversación controlada por nodos, funciones y bifurcaciones.
+
+Retell ofrece nodos de conversación, funciones determinísticas y bifurcaciones condicionales, apropiados para separar verificación, recordatorio, asistencia y escalamiento. [Conversation Flow](https://docs.retellai.com/build/conversation-flow/overview).
+
+---
+
+## 4. Flujo de llamada
+
+1. **Apertura y transparencia**
+   - Presentar entidad y propósito general.
+   - Informar que se interactúa con un asistente automatizado.
+   - Aplicar el aviso de grabación exigido por la jurisdicción.
+
+2. **Verificación**
+   - Confirmar que habla la persona correcta.
+   - Verificar fecha de nacimiento contra el backend.
+   - No revelar información financiera antes de verificar.
+
+3. **Recordatorio preventivo**
+   - Comunicar fecha próxima de pago.
+   - Confirmar comprensión y disposición de pago.
+   - Evitar lenguaje de presión o amenazas.
+
+4. **Asistencia**
+   - Si existe dificultad, consultar opciones de reprogramación y seguros.
+   - Registrar intención, solicitud de reprogramación o necesidad de atención humana.
+   - Una reprogramación es una solicitud pendiente hasta que el backend la valide.
+
+5. **Cierre**
+   - Resumir los acuerdos.
+   - Confirmar siguiente paso.
+   - Registrar exclusión, devolución de llamada o transferencia cuando corresponda.
+
+### Resultado de negocio de la llamada
+
+No se debe equiparar “llamada conectada” con “llamada exitosa”. Para este sistema:
+
+> **Llamada preventiva exitosa:** se verificó a la persona correcta y se comunicó el recordatorio de manera comprensible, o se canalizó correctamente una necesidad de asistencia.
+
+Correo de voz, número ocupado o llamada contestada por un tercero no cuentan como éxito preventivo.
+
+---
+
+## 5. Sentimiento y adaptación del agente
+
+### Durante la llamada
+
+Después de las primeras dos intervenciones del cliente, el flujo determinará un estado:
+
+- `calm_positive`
+- `neutral`
+- `confused_anxious`
+- `frustrated`
+- `distressed`
+
+Para el MVP, el propio modelo puede inferirlo mediante instrucciones y guardarlo como variable. Para mayor trazabilidad, se puede introducir una función `assess_live_sentiment`; Retell enviará a la función la transcripción acumulada y recibirá `label`, `confidence` y `recommended_style`.
+
+| Sentimiento estimado | Adaptación |
+|---|---|
+| Positivo o calmado | Mensaje breve y directo |
+| Neutral | Flujo estándar |
+| Confundido o ansioso | Ritmo más lento, explicación simple y confirmaciones |
+| Frustrado | Reconocer molestia, evitar repetición y ofrecer ayuda humana |
+| Angustiado | Detener presión, ofrecer devolución de llamada o transferencia |
+
+La adaptación puede cambiar tono, velocidad y extensión, pero **nunca** modificar políticas, elegibilidad o información financiera.
+
+### Después de la llamada
+
+Retell proporciona análisis posterior con resumen, `user_sentiment`, `call_successful` y datos personalizados. También pueden extraerse `sentiment_start`, `sentiment_end`, `sentiment_shift`, motivo de tensión y necesidad de intervención humana. [Post-Call Analysis](https://docs.retellai.com/features/post-call-analysis-overview).
+
+En la API actual debe utilizarse `post_call_analysis_data`, incluyendo los presets `call_summary`, `call_successful` y `user_sentiment`; los campos antiguos de prompts fueron retirados el 15 de junio de 2026. [Aviso de migración de Retell](https://docs.retellai.com/deprecation-notice/2026/06-15_legacy_list_endpoints).
+
+El panel debe presentar este dato como **sentimiento estimado por IA**, no como una afirmación objetiva sobre el cliente.
+
+---
+
+## 6. Panel de control
+
+### 6.1 Resumen ejecutivo
+
+- Llamadas programadas, intentadas, conectadas y exitosas.
+- Embudo: conexión → persona correcta → recordatorio entregado → compromiso.
+- Pagos puntuales y comparación con un grupo de control.
+- Distribución y evolución del sentimiento.
+- Alertas de cumplimiento, fallos técnicos y campañas detenidas.
+
+### 6.2 Operación y campañas
+
+- Calendario y cola de llamadas.
+- Resultados por campaña, horario, producto y segmento.
+- Intentos pendientes, reintentos y llamadas agotadas.
+- Capacidad concurrente y ritmo de marcación.
+- Pausar, reanudar o cerrar una campaña.
+
+### 6.3 Perfil del cliente
+
+- Datos de contacto parcialmente enmascarados.
+- Obligaciones y próximas fechas de pago.
+- Historial cronológico de intentos y conversaciones.
+- Compromisos, reprogramaciones, seguros y devoluciones de llamada.
+- Tendencia del sentimiento y exclusiones de contacto.
+
+### 6.4 Detalle de llamada
+
+- Estado, duración, causa de desconexión y resultado.
+- Reproductor de grabación con permisos.
+- Transcripción sincronizada y llamadas a herramientas.
+- Sentimiento inicial, final y por momento relevante.
+- Latencia, errores, costos, logs y versión del agente.
+
+Retell expone transcripción con marcas de tiempo, invocaciones de herramientas, grabación normal o multicanal, logs públicos, latencias y causa de desconexión. [Get Call API](https://docs.retellai.com/api-references/get-call).
+
+### 6.5 Parametrización y auditoría
+
+- Reglas de campaña con borrador, publicación y versionado.
+- Horarios, frecuencia, feriados, correo de voz y escalamiento.
+- Política de retención y acceso a grabaciones.
+- Usuarios, roles y permisos.
+- Registro de quién cambió cada regla y cuándo.
+
+---
+
+## 7. Métricas recomendadas
+
+### 7.1 Embudo preventivo
+
+| Métrica | Fórmula |
+|---|---|
+| Ejecución programada | trabajos ejecutados / trabajos programados |
+| Tasa de conexión | llamadas conectadas / intentos |
+| Contacto con persona correcta — RPC | clientes verificados / intentos |
+| Entrega efectiva del recordatorio | recordatorios comunicados / clientes verificados |
+| Pago puntual | obligaciones pagadas en fecha / obligaciones elegibles |
+
+El impacto principal debería medirse como **incremento de pago puntual frente a un grupo de control**, no solamente como volumen de llamadas.
+
+### 7.2 Efectividad de cobranza preventiva
+
+| Métrica | Definición |
+|---|---|
+| Intención de pago | clientes que confirman intención / recordatorios entregados |
+| Compromiso cumplido | pagos realizados según compromiso / compromisos |
+| Resolución en primer contacto | casos resueltos en la primera conversación verificada |
+| Reprogramación válida | solicitudes aprobadas / solicitudes realizadas |
+| Recuperación por reintento | contactos obtenidos después del primer intento |
+
+### 7.3 Operación y experiencia
+
+| Métrica | Definición |
+|---|---|
+| Duración promedio — AHT | duración total / llamadas conectadas |
+| Transferencia humana | transferencias / llamadas conectadas |
+| Distribución de resultados | contestada, buzón, ocupado, sin respuesta, error |
+| Cambio de sentimiento | sentimiento final menos sentimiento inicial |
+| Exclusión o queja | solicitudes de no llamar y quejas / contactos verificados |
+
+Ocupación, nivel de servicio y abandono solo aplican si existe una cola de agentes humanos; no deben copiarse directamente al agente automatizado.
+
+### 7.4 Calidad técnica y costo
+
+| Métrica | Uso |
+|---|---|
+| Latencia E2E p50/p95/p99 | naturalidad de la conversación |
+| ASR, LLM, TTS, red y base de conocimiento | localizar el componente lento |
+| Latencia y error de herramientas | calidad de consultas al backend |
+| Integridad de evidencia | llamadas con webhook, transcripción y grabación completas |
+| Costo por RPC y por cuenta protegida | eficiencia financiera |
+
+Retell entrega estadísticas de latencia para `e2e`, `asr`, `llm`, `llm_websocket_network_rtt`, `tts`, `knowledge_base` y `s2s`, además del costo y uso de tokens. [Métricas de llamada de Retell](https://docs.retellai.com/api-references/get-call).
+
+---
+
+## 8. Reglas de negocio parametrizables
+
+### Elegibilidad
+
+- Días antes del vencimiento en que se incluye una obligación.
+- Productos, segmentos y niveles de riesgo habilitados.
+- Exclusión por pago ya realizado, disputa, mora o dato incompleto.
+- Consentimiento de contacto y lista “no llamar”.
+- Priorización por fecha, riesgo o monto.
+
+### Horario
+
+- Zona horaria del cliente.
+- Ventanas permitidas por día de semana.
+- Feriados y fechas bloqueadas.
+- Horario preferido del cliente.
+- Ventana de seguridad antes del cierre diario.
+
+### Frecuencia y reintentos
+
+- Máximo de intentos por ciclo de pago.
+- Separación mínima entre intentos.
+- Reintento según resultado: ocupado, sin respuesta o buzón.
+- Suspensión inmediata después de contacto exitoso o exclusión.
+- Límite de llamadas concurrentes y por segundo.
+
+### Mensajería y privacidad
+
+- Mensaje de apertura y aviso de grabación.
+- Información permitida antes de verificar identidad.
+- Mensaje genérico de correo de voz, sin detalles financieros.
+- Idioma y pronunciación.
+- Retención y redacción de datos personales.
+
+### Asistencia y escalamiento
+
+- Condiciones para ofrecer reprogramación.
+- Seguros o beneficios consultables.
+- Límites que requieren aprobación humana.
+- Sentimientos o frases que activan transferencia.
+- Horarios y destinos de atención humana.
+
+Las reglas deben publicarse como versiones inmutables. Cada trabajo y llamada conservará la versión utilizada.
+
+---
+
+## 9. Diseño de base de datos
+
+Se recomienda PostgreSQL. Todos los identificadores expuestos a Retell deben ser UUID opacos.
+
+### 9.1 Datos recibidos
+
+| Tabla | Campos principales |
+|---|---|
+| `organizations` | `id`, `name`, `timezone`, `currency`, `retention_days` |
+| `import_batches` | `id`, `organization_id`, `source`, `status`, `received_at`, `row_counts`, `error_report` |
+| `customers` | `id`, `organization_id`, `external_ref`, `preferred_name`, `dob_ciphertext`, `timezone`, `language`, `segment`, `status` |
+| `customer_contacts` | `id`, `customer_id`, `phone_ciphertext`, `phone_hash`, `phone_last4`, `consent_status`, `do_not_call`, `is_primary` |
+| `obligations` | `id`, `customer_id`, `external_ref`, `product_type`, `next_due_date`, `amount_due`, `currency`, `status`, `source_updated_at` |
+
+### 9.2 Campañas y programación
+
+| Tabla | Campos principales |
+|---|---|
+| `assistance_options` | `id`, `obligation_id`, `kind`, `eligible`, `terms_json`, `valid_until`, `source_updated_at` |
+| `campaigns` | `id`, `organization_id`, `name`, `status`, `agent_id`, `starts_at`, `ends_at` |
+| `rule_set_versions` | `id`, `campaign_id`, `version`, `config_json`, `status`, `published_at`, `published_by` |
+| `blackout_dates` | `id`, `organization_id`, `date`, `region`, `reason` |
+| `call_jobs` | `id`, `campaign_id`, `customer_id`, `obligation_id`, `rule_set_version_id`, `scheduled_at`, `status`, `priority`, `attempt_count`, `next_retry_at` |
+
+### 9.3 Conversaciones
+
+| Tabla | Campos principales |
+|---|---|
+| `calls` | `id`, `call_job_id`, `retell_call_id`, `customer_id`, `status`, `started_at`, `ended_at`, `duration_ms`, `disconnect_reason`, `right_party_verified`, `reminder_delivered`, `call_successful`, `summary`, `outcome` |
+| `call_turns` | `id`, `call_id`, `sequence`, `speaker`, `start_ms`, `end_ms`, `text`, `redacted_text` |
+| `sentiment_observations` | `id`, `call_id`, `turn_id`, `phase`, `label`, `score`, `confidence`, `source`, `model_version`, `observed_at` |
+| `tool_executions` | `id`, `call_id`, `tool_name`, `request_redacted`, `response_redacted`, `started_at`, `duration_ms`, `status`, `error_code` |
+| `customer_actions` | `id`, `call_id`, `obligation_id`, `type`, `proposed_date`, `status`, `external_ref`, `created_at` |
+
+Tipos de `customer_actions`: `ACKNOWLEDGED`, `PROMISE_TO_PAY`, `RESCHEDULE_REQUEST`, `INSURANCE_INQUIRY`, `CALLBACK_REQUEST`, `OPT_OUT`.
+
+### 9.4 Evidencia, métricas y auditoría
+
+| Tabla | Campos principales |
+|---|---|
+| `call_artifacts` | `id`, `call_id`, `kind`, `provider_ref`, `storage_uri`, `url_expires_at`, `checksum`, `redacted`, `retention_until`, `status` |
+| `call_metrics` | `call_id`, `e2e_p50_ms`, `e2e_p95_ms`, `asr_p95_ms`, `llm_p95_ms`, `tts_p95_ms`, `tool_p95_ms`, `cost`, `token_count`, `raw_latency_json` |
+| `webhook_events` | `id`, `retell_call_id`, `event_type`, `payload_hash`, `payload_redacted`, `received_at`, `processed_at`, `status`, `error` |
+| `payment_outcomes` | `id`, `obligation_id`, `due_date`, `paid_at`, `amount_paid`, `status`, `source_batch_id` |
+| `audit_events` | `id`, `organization_id`, `actor_id`, `action`, `entity_type`, `entity_id`, `before_json`, `after_json`, `created_at` |
+
+### Relaciones principales
+
+```text
+organization ──< customer ──< contact
+                    │
+                    └──< obligation ──< assistance_option
+campaign ──< rule_set_version
+campaign ──< call_job ──< call
+call ──< turn / sentiment / artifact / tool_execution / customer_action
+obligation ──< payment_outcome
+```
+
+### Índices mínimos
+
+- Únicos en `(organization_id, external_ref)` y `retell_call_id`.
+- Parcial en `call_jobs(scheduled_at)` donde `status = 'PENDING'`.
+- Historial en `calls(customer_id, started_at DESC)`.
+- Secuencia en `call_turns(call_id, sequence)`.
+- Único en `webhook_events(payload_hash)` para idempotencia.
+
+No se necesita particionamiento para el MVP. Se introduciría por mes únicamente cuando el volumen de llamadas lo justifique.
+
+---
+
+## 10. Base local de clientes con datos sintéticos
+
+No conviene crear un segundo modelo exclusivo para pruebas. Se debe poblar el mismo esquema mediante un `import_batch` con `source = 'synthetic'`.
+
+### Datos mínimos por cliente
+
+```text
+customers:
+  external_ref
+  preferred_name
+  date_of_birth
+  timezone
+  language
+
+customer_contacts:
+  phone_e164
+  consent_status
+  do_not_call
+  preferred_call_window
+
+obligations:
+  product_type
+  next_due_date
+  amount_due
+  currency
+  status
+
+assistance_options:
+  reschedule_eligible
+  earliest_new_date
+  latest_new_date
+  unemployment_insurance_active
+  insurance_instructions
+```
+
+Se recomienda preparar entre 30 y 50 clientes sintéticos que cubran: camino feliz, dificultad de pago, reprogramación elegible, seguro por desempleo, solicitud de humano, fecha inválida, exclusión de contacto y datos incompletos.
+
+Los resultados de telefonía —buzón, ocupado, sin respuesta— deben simularse mediante pruebas de conversación o un adaptador Retell falso; nunca realizando llamadas accidentales a números inventados.
+
+---
+
+## 11. APIs principales
+
+| Endpoint | Propósito |
+|---|---|
+| `POST /api/imports/customers` | Importar o actualizar clientes, contactos y obligaciones |
+| `POST /api/retell/webhooks` | Recibir eventos de llamadas de forma idempotente |
+| `POST /api/retell/tools/verify-identity` | Verificar identidad y emitir token temporal |
+| `POST /api/retell/tools/get-assistance-options` | Obtener reprogramación, seguros o rutas de ayuda |
+| `POST /api/retell/tools/request-reschedule` | Registrar una solicitud validada e idempotente |
+
+Retell genera `call_started`, `call_ended` y `call_analyzed`; las llamadas no conectadas todavía producen los dos últimos eventos. Los webhooks tienen reintentos y deben procesarse idempotentemente. [Webhooks de Retell](https://docs.retellai.com/features/webhook-overview).
+
+El backend local debe exponerse mediante un túnel HTTPS durante la demo, porque Retell no llama `localhost` ni direcciones privadas.
+
+---
+
+## 12. Plan de ejecución
+
+| Fase | Duración | Entregables |
+|---|---:|---|
+| 0. Definición | Día 1 | Definición de éxito, reglas iniciales, consentimiento, contrato de datos y guion |
+| 1. Datos y programación | Días 2–4 | PostgreSQL, migraciones, fake data, importación, campañas, reglas y worker |
+| 2. Agente Retell | Días 5–7 | Conversation Flow, verificación, herramientas, sentimiento en vivo y webhooks |
+| 3. Panel | Días 8–10 | Dashboards, clientes, detalle de llamada, grabación, transcripción y configuración |
+| 4. Validación y piloto | Días 11–15 | Pruebas, seguridad, carga, ajustes de conversación, métricas y demostración |
+
+### Pruebas obligatorias
+
+- Reglas de horario, zona horaria, frecuencia y exclusiones.
+- Contratos de Custom Functions y webhooks.
+- Conversaciones simuladas por escenario y sentimiento.
+- Flujo completo desde importación hasta dashboard.
+- Reintentos, webhooks duplicados, timeout del backend y caída de Retell.
+
+### Criterios de aceptación
+
+- Toda llamada, incluso no conectada, tiene un registro y resultado rastreable.
+- Ninguna llamada sale fuera del horario permitido o contra una exclusión.
+- La información complementaria solo se consulta después de verificar identidad.
+- Transcripción, grabación, logs y métricas son accesibles según permisos.
+- Los totales del dashboard reconcilian con trabajos, llamadas y eventos recibidos.
+
+---
+
+## 13. Seguridad y gobierno
+
+1. Verificar `X-Retell-Signature` en herramientas y webhooks.
+2. Cifrar teléfono, fecha de nacimiento y referencias sensibles; usar hashes para búsquedas.
+3. Aplicar roles de operador, supervisor, auditor y administrador.
+4. Versionar reglas, prompts y agente utilizado en cada llamada.
+5. Definir consentimiento, retención y transferencia humana con el área legal del país aplicable.
+
+Se recomienda `everything_except_pii`, redacción configurada y URLs firmadas. Retell permite eliminar PII de transcripciones, grabaciones, logs, metadata y resultados de herramientas. [Configuración de almacenamiento y PII](https://docs.retellai.com/accounts/privacy-disable).
+
+Las URLs firmadas de Retell expiran, normalmente en 24 horas. El panel debe regenerarlas bajo demanda o copiar los artefactos permitidos a almacenamiento cifrado controlado por el banco; guardar únicamente la URL temporal en la base no es suficiente. [URLs seguras de Retell](https://docs.retellai.com/accounts/signed-secure-url).
+
+
+# Stack tecnológico del MVP
+
+El MVP será **autocontenido**: no consultará APIs, bases de datos, autenticación ni sistemas del banco. Todos los clientes, obligaciones, beneficios y pagos serán sintéticos.
+
+## Aplicación
+
+| Capa | Tecnología |
+|---|---|
+| Panel | React + TypeScript + Vite + Recharts |
+| Backend | Python 3.14 + FastAPI + Pydantic |
+| Persistencia | PostgreSQL 17 |
+| Acceso a datos | SQLAlchemy 2 + Alembic |
+| Voz | API/SDK de Retell + webhooks + Custom Functions |
+
+## Ejecución
+
+| Componente | Tecnología |
+|---|---|
+| API | Contenedor FastAPI |
+| Worker | Proceso Python que consulta llamadas pendientes |
+| Panel | Contenedor web que sirve la aplicación React |
+| Base de datos | Contenedor PostgreSQL con volumen persistente |
+| Acceso de Retell | Cloudflare Tunnel o ngrok con HTTPS |
+
+No se usarán Celery, Redis, SQS ni Kubernetes para el MVP.
+
+## Funcionamiento
+
+```text
+Panel React
+    │
+    ▼
+FastAPI ─────────► PostgreSQL con fake data
+    ▲                    │
+    │                    ▼
+    │              Worker de llamadas
+    │                    │
+    │                    ▼
+    └── Túnel HTTPS ◄── Retell ──► Teléfono autorizado
+```
+
+El worker y la API usan el mismo código, pero se ejecutan como procesos separados:
+
+```text
+api     → recibe solicitudes y webhooks
+worker  → busca llamadas pendientes y las envía a Retell
+```
+
+## Datos simulados
+
+PostgreSQL incluirá datos sintéticos de:
+
+- Clientes y números de prueba autorizados.
+- Obligaciones y próximas fechas de pago.
+- Elegibilidad para reprogramación.
+- Seguro por desempleo y beneficios simulados.
+- Pagos y resultados ficticios para alimentar métricas.
+
+La verificación de identidad comparará la respuesta del cliente contra la fecha de nacimiento ficticia almacenada localmente.
+
+# Instrucciones de despliegue
+
+## 1. Servicios de Docker Compose
+
+El archivo `docker-compose.yml` levantará cuatro servicios:
+
+```text
+db       PostgreSQL
+api      FastAPI
+worker   Programador y ejecutor de llamadas
+web      Panel React
+```
+
+`api` y `worker` se crean desde el mismo Dockerfile del backend, pero arrancan con comandos diferentes.
+
+## 2. Variables de entorno
+
+Crear `.env` sin incorporarlo al repositorio:
+
+```env
+DATABASE_URL=postgresql+psycopg://app:password@db:5432/collections
+RETELL_API_KEY=...
+RETELL_AGENT_ID=...
+RETELL_FROM_NUMBER=...
+PUBLIC_BASE_URL=https://url-publica-del-tunel.example
+APP_SECRET=...
+FAKE_DATA_ONLY=true
+RETELL_ALLOWED_TEST_NUMBERS=+503XXXXXXXX
+```
+
+`RETELL_ALLOWED_TEST_NUMBERS` impedirá llamar accidentalmente a números no autorizados.
+
+## 3. Inicializar la aplicación
+
+```bash
+docker compose build
+docker compose up -d db
+docker compose run --rm api alembic upgrade head
+docker compose run --rm api python -m app.seed
+docker compose up -d api worker web
+```
+
+El comando `app.seed` cargará los clientes y escenarios ficticios.
+
+## 4. Exponer el backend
+
+Crear un túnel HTTPS hacia FastAPI:
+
+```text
+https://mvp-hackathon.example
+          │
+          ▼
+http://localhost:8000
+```
+
+Configurar en Retell:
+
+```text
+Webhook:
+https://mvp-hackathon.example/api/v1/retell/webhooks
+
+Verificación:
+https://mvp-hackathon.example/api/v1/retell/tools/verify-identity
+
+Información adicional:
+https://mvp-hackathon.example/api/v1/retell/tools/get-assistance-options
+
+Reprogramación:
+https://mvp-hackathon.example/api/v1/retell/tools/request-reschedule
+```
+
+El backend debe validar la firma enviada por Retell antes de procesar cada solicitud.
+
+## 5. Prueba de despliegue
+
+Comprobar en este orden:
+
+1. El panel abre y muestra clientes ficticios.
+2. FastAPI responde en `/health`.
+3. Se puede programar una llamada desde el panel.
+4. Retell llama únicamente a un teléfono autorizado.
+5. El webhook registra resultado, transcripción, sentimiento y grabación.
+
+Para una demostración más estable, el mismo Docker Compose puede ejecutarse en una máquina virtual Linux. PostgreSQL no debe publicar su puerto a Internet; solamente el backend debe ser accesible mediante HTTPS.
+
+## Fuera del MVP
+
+- Integraciones con el banco.
+- Usuarios o SSO corporativo.
+- Datos financieros reales.
+- Conciliación real de pagos.
+- Infraestructura AWS de producción.
+
+## Key Learnings:
+
+1. El MVP funcionará completamente con datos sintéticos locales.
+2. Retell será el único servicio externo.
+3. Docker Compose ejecutará panel, API, worker y PostgreSQL.
+4. Una lista permitida evitará llamadas accidentales a números reales.
