@@ -97,7 +97,6 @@ export function App() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <span className="eyebrow">MVP 12 horas</span>
             <h1>Centro de llamadas preventivas</h1>
             <p>Plataforma inteligente para gestión preventiva de cobranza y seguimiento de conversaciones.</p>
           </div>
