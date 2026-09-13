@@ -51,7 +51,7 @@ export type Call = {
   created_at: string;
 };
 
-const API_BASE = "/api/v1";
+const API_BASE = import.meta.env.VITE_API_URL ?? "/api/v1";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
