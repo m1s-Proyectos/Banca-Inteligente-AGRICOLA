@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     fake_data_only: bool = True
     retell_allowed_test_numbers: str = Field(default="")
 
-    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173", "https://banca-inteligente-one.vercel.app"]
 
     @cached_property
     def allowed_numbers(self) -> set[str]:
