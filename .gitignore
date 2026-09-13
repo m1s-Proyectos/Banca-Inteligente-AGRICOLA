@@ -1,4 +1,8 @@
 .env
+.env.local
+.env.*
+!.env.example
+!.env.local.example
 .venv/
 __pycache__/
 *.pyc
@@ -10,4 +14,3 @@ backend/.coverage
 frontend/.vite/
 postgres-data/
 demo.db
-

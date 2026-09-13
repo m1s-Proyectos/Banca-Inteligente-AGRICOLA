@@ -1,5 +1,7 @@
 import hashlib
 import hmac
+import time
+import secrets
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -11,11 +13,56 @@ from app.core.config import settings
 from app.models import AssistanceOption, Call, CallJob, Customer, CustomerAction, CustomerContact, Obligation, WebhookEvent
 
 
+VERIFICATION_TOKEN_BYTES = 32
+RETELL_SIGNATURE_TOLERANCE_SECONDS = 300
+_verification_tokens: dict[str, str] = {}
+
+def verification_failed_response() -> dict[str, Any]:
+    return {"verified": False, "verification_token": None, "message": ""}
+
+def parse_retell_signature(signature: str) -> dict[str, str] | None:
+    parts: dict[str, str] = {}
+    for item in signature.split(","):
+        key, separator, value = item.partition("=")
+        if not separator:
+            return None
+        parts[key.strip()] = value.strip()
+    return parts
+
+
+def build_retell_signature_digest(raw_body: bytes, timestamp: str, api_key: str) -> str:
+    return hmac.new(
+        api_key.encode("utf-8"),
+        raw_body + timestamp.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 def verify_retell_signature(raw_body: bytes, signature: str | None) -> bool:
     if not signature:
         return settings.fake_data_only
-    digest = hmac.new(settings.retell_api_key.encode(), raw_body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(digest, signature)
+    if not settings.retell_api_key:
+        return False
+
+    parts = parse_retell_signature(signature)
+    if not parts:
+        return False
+
+    timestamp = parts.get("v")
+    received_digest = parts.get("d")
+    if not timestamp or not received_digest:
+        return False
+
+    try:
+        timestamp_seconds = float(timestamp)
+    except ValueError:
+        return False
+
+    if abs(time.time() - timestamp_seconds) > RETELL_SIGNATURE_TOLERANCE_SECONDS:
+        return False
+
+    expected_digest = build_retell_signature_digest(raw_body, timestamp, settings.retell_api_key)
+    return hmac.compare_digest(expected_digest, received_digest)
 
 
 def payload_hash(raw_body: bytes) -> str:
@@ -26,21 +73,38 @@ def normalize_dob(value: str) -> str:
     return value.strip().replace("/", "-")
 
 
+def generate_verification_token() -> str:
+    return secrets.token_urlsafe(VERIFICATION_TOKEN_BYTES)
+
+
+def issue_verification_token(customer_ref: str) -> str:
+    token = generate_verification_token()
+    _verification_tokens[token] = customer_ref
+    return token
+
+
+def is_verification_token_valid(customer_ref: str, verification_token: str) -> bool:
+    return _verification_tokens.get(verification_token) == customer_ref
+
+
 def verify_identity(db: Session, customer_ref: str, supplied_dob: str) -> dict[str, Any]:
     customer = db.scalar(select(Customer).where(Customer.id == customer_ref))
     if not customer:
-        return {"verified": False, "reason": "customer_not_found"}
+        return verification_failed_response()
 
     verified = normalize_dob(customer.dob) == normalize_dob(supplied_dob)
+    if not verified:
+        return verification_failed_response()
+
     return {
-        "verified": verified,
-        "verification_token": f"verified:{customer.id}" if verified else None,
-        "message": "Identidad verificada" if verified else "La fecha no coincide",
+        "verified": True,
+        "verification_token": issue_verification_token(customer.id),
+        "message": "Identidad verificada",
     }
 
 
 def get_assistance_options(db: Session, customer_ref: str, verification_token: str) -> dict[str, Any]:
-    if verification_token != f"verified:{customer_ref}":
+    if not is_verification_token_valid(customer_ref, verification_token):
         return {"authorized": False, "options": []}
 
     obligation = db.scalar(select(Obligation).where(Obligation.customer_id == customer_ref).limit(1))
@@ -70,8 +134,13 @@ def get_assistance_options(db: Session, customer_ref: str, verification_token: s
 
 
 def request_reschedule(db: Session, customer_ref: str, verification_token: str, proposed_date: str) -> dict[str, Any]:
-    if verification_token != f"verified:{customer_ref}":
+    if not is_verification_token_valid(customer_ref, verification_token):
         return {"accepted": False, "reason": "not_verified"}
+
+    try:
+        parsed_proposed_date = date.fromisoformat(proposed_date)
+    except (TypeError, ValueError):
+        return {"accepted": False, "reason": "invalid_request"}
 
     obligation = db.scalar(select(Obligation).where(Obligation.customer_id == customer_ref).limit(1))
     call = db.scalar(select(Call).where(Call.customer_id == customer_ref).order_by(Call.created_at.desc()).limit(1))
@@ -82,7 +151,7 @@ def request_reschedule(db: Session, customer_ref: str, verification_token: str, 
         call_id=call.id,
         obligation_id=obligation.id,
         type="RESCHEDULE_REQUEST",
-        proposed_date=date.fromisoformat(proposed_date),
+        proposed_date=parsed_proposed_date,
         status="PENDING_REVIEW",
     )
     db.add(action)
@@ -160,7 +229,10 @@ def process_webhook(db: Session, raw_body: bytes, payload: dict[str, Any]) -> di
         return {"ok": True, "duplicate": True}
 
     event = payload.get("event", "unknown")
-    call_payload = payload.get("call", {})
+    call_payload = payload.get("call") or {}
+    if not isinstance(call_payload, dict):
+        call_payload = {}
+
     retell_call_id = call_payload.get("call_id")
     event_record = WebhookEvent(
         retell_call_id=retell_call_id,
@@ -173,15 +245,41 @@ def process_webhook(db: Session, raw_body: bytes, payload: dict[str, Any]) -> di
 
     call = db.scalar(select(Call).where(Call.retell_call_id == retell_call_id)) if retell_call_id else None
     if call:
-        call.status = call_payload.get("call_status", call.status).upper()
-        call.disconnect_reason = call_payload.get("disconnection_reason")
-        call.transcript = call_payload.get("transcript") or call.transcript
-        call.recording_url = call_payload.get("recording_url") or call.recording_url
+        call_status = call_payload.get("call_status")
+        if call_status:
+            call.status = str(call_status).upper()
+
+        disconnect_reason = call_payload.get("disconnection_reason")
+        if disconnect_reason:
+            call.disconnect_reason = disconnect_reason
+
+        transcript = call_payload.get("transcript")
+        if transcript:
+            call.transcript = transcript
+
+        recording_url = call_payload.get("recording_url")
+        if recording_url:
+            call.recording_url = recording_url
+
         analysis = call_payload.get("post_call_analysis_data") or {}
-        call.summary = analysis.get("call_summary") or call.summary
-        call.sentiment = analysis.get("user_sentiment") or call.sentiment
-        call.call_successful = bool(analysis.get("call_successful", call.call_successful))
-        call.outcome = "VERIFIED_REMINDER_DELIVERED" if call.call_successful else call.outcome
+        if not isinstance(analysis, dict):
+            analysis = {}
+
+        summary = analysis.get("call_summary")
+        if summary:
+            call.summary = summary
+
+        sentiment = analysis.get("user_sentiment")
+        if sentiment:
+            call.sentiment = sentiment
+
+        if "call_successful" in analysis:
+            call.call_successful = bool(analysis["call_successful"])
+            if call.call_successful:
+                call.outcome = "VERIFIED_REMINDER_DELIVERED"
+
+        if event == "call_started":
+            call.started_at = datetime.now(UTC)
         if event in {"call_ended", "call_analyzed"}:
             call.ended_at = datetime.now(UTC)
 

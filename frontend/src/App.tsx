@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, Clock3, Headphones, PhoneCall, RefreshCw, ShieldCheck } from "lucide-react";
+import {
+  AlertTriangle,
+  BarChart3,
+  CheckCircle2,
+  Clock3,
+  Headphones,
+  PhoneCall,
+  RefreshCw,
+  ShieldCheck,
+  UsersRound
+} from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api, Call, CallJob, Customer, Summary } from "./lib/api";
 
@@ -64,7 +74,9 @@ export function App() {
     <main className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <ShieldCheck size={24} />
+          <div className="brandMark">
+            <ShieldCheck size={22} />
+          </div>
           <div>
             <strong>Banca Inteligente</strong>
             <span>Cobranza preventiva</span>
@@ -87,6 +99,7 @@ export function App() {
           <div>
             <span className="eyebrow">MVP 12 horas</span>
             <h1>Centro de llamadas preventivas</h1>
+            <p>Plataforma inteligente para gestión preventiva de cobranza y seguimiento de conversaciones.</p>
           </div>
           <button className="iconButton" onClick={() => void load()} title="Actualizar">
             <RefreshCw size={18} />
@@ -96,10 +109,10 @@ export function App() {
         {error && <div className="error">{error}</div>}
 
         <section className="metrics">
-          <Metric icon={<Headphones />} label="Clientes" value={data.summary?.customers ?? 0} />
-          <Metric icon={<Clock3 />} label="Pendientes" value={data.summary?.pending_jobs ?? 0} />
-          <Metric icon={<PhoneCall />} label="Intentadas" value={data.summary?.attempted_calls ?? 0} />
-          <Metric icon={<CheckCircle2 />} label="Exitosas" value={data.summary?.successful_calls ?? 0} />
+          <Metric icon={<Headphones />} label="Clientes" value={data.summary?.customers ?? 0} tone="primary" />
+          <Metric icon={<Clock3 />} label="Pendientes" value={data.summary?.pending_jobs ?? 0} tone="warning" />
+          <Metric icon={<PhoneCall />} label="Intentadas" value={data.summary?.attempted_calls ?? 0} tone="secondary" />
+          <Metric icon={<CheckCircle2 />} label="Exitosas" value={data.summary?.successful_calls ?? 0} tone="success" />
         </section>
 
         <section className="grid">
@@ -109,28 +122,31 @@ export function App() {
                 <h2>Embudo operativo</h2>
                 <p>Se actualiza desde la base local y webhooks Retell.</p>
               </div>
+              <span className="panelBadge"><BarChart3 size={14} /> Tiempo real</span>
             </div>
             <div className="chart">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="name" />
-                  <YAxis allowDecimals={false} />
-                  <Tooltip />
-                  <Bar dataKey="value" fill="#256f68" radius={[6, 6, 0, 0]} />
+                  <CartesianGrid stroke="#E5E7EB" strokeDasharray="4 4" vertical={false} />
+                  <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: "#5F6673", fontSize: 12 }} />
+                  <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={{ fill: "#5F6673", fontSize: 12 }} />
+                  <Tooltip cursor={{ fill: "rgba(0, 51, 102, 0.06)" }} />
+                  <Bar dataKey="value" fill="#003366" radius={[6, 6, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
           </div>
 
-          <div className="panel">
+          <div className="panel selectedPanel">
             <div className="panelHeader">
               <h2>Cliente seleccionado</h2>
             </div>
             {selectedCustomer ? (
               <div className="customerFocus">
-                <strong>{selectedCustomer.preferred_name}</strong>
-                <span>{selectedCustomer.segment} · termina {selectedCustomer.phone_last4 ?? "----"}</span>
+                <div>
+                  <strong>{selectedCustomer.preferred_name}</strong>
+                  <span>{selectedCustomer.segment} · termina {selectedCustomer.phone_last4 ?? "----"}</span>
+                </div>
                 <dl>
                   <div>
                     <dt>Producto</dt>
@@ -162,6 +178,7 @@ export function App() {
           <div className="panel">
             <div className="panelHeader">
               <h2>Clientes</h2>
+              <span className="panelBadge"><UsersRound size={14} /> {data.customers.length}</span>
             </div>
             <div className="list">
               {data.customers.map((customer) => (
@@ -174,7 +191,9 @@ export function App() {
                     <strong>{customer.preferred_name}</strong>
                     <small>{customer.external_ref}</small>
                   </span>
-                  <em>{customer.do_not_call ? "No llamar" : customer.segment}</em>
+                  <em className={customer.do_not_call ? "statusBadge danger" : "statusBadge neutral"}>
+                    {customer.do_not_call ? "No llamar" : customer.segment}
+                  </em>
                 </button>
               ))}
             </div>
@@ -191,7 +210,7 @@ export function App() {
                     <strong>{job.customer_name}</strong>
                     <small>{new Date(job.scheduled_at).toLocaleString()}</small>
                   </span>
-                  <em>{job.status}</em>
+                  <em className="statusBadge warning">{job.status}</em>
                 </div>
               ))}
             </div>
@@ -219,13 +238,12 @@ export function App() {
   );
 }
 
-function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; value: number }) {
+function Metric({ icon, label, value, tone }: { icon: React.ReactNode; label: string; value: number; tone: string }) {
   return (
-    <article className="metric">
+    <article className={`metric ${tone}`}>
       <div>{icon}</div>
       <span>{label}</span>
       <strong>{value}</strong>
     </article>
   );
 }
-
