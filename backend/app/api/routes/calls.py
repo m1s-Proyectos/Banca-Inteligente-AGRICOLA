@@ -23,7 +23,10 @@ def get_call_jobs(db: DbSession) -> list[CallJobOut]:
 
 
 @router.post("/call-jobs", response_model=CallJobOut)
-def create_call_job(payload: ScheduleCallRequest, db: DbSession) -> CallJobOut:
+def create_call_job(
+    payload: ScheduleCallRequest,
+    db: DbSession,
+) -> CallJobOut:
     schedule_call(db, payload.customer_id, payload.obligation_id, payload.scheduled_at)
     return list_jobs(db)[0]
 

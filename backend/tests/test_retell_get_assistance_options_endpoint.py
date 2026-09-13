@@ -1,12 +1,14 @@
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.core.security import hash_dob
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
@@ -29,23 +31,45 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         self.customer_without_options = self.create_customer("CUS-NO-OPTIONS", "Ana")
         self.insurance_customer = self.create_customer("CUS-INSURANCE", "Jose")
 
-        self.obligation = self.create_obligation(self.customer.id, "OBL-ASSIST", days_ahead=7)
-        self.db.add(
-            AssistanceOption(
-                obligation_id=self.obligation.id,
-                reschedule_eligible=True,
-                earliest_new_date=date(2026, 9, 20),
-                latest_new_date=date(2026, 9, 30),
-                unemployment_insurance_active=False,
-                insurance_instructions="",
-            )
+        self.obligation = Obligation(
+            customer_id=self.customer.id,
+            external_ref="OBL-ASSIST",
+            product_type="loan",
+            next_due_date=datetime.now(ZoneInfo(self.customer.timezone)).date() + timedelta(days=7),
+            amount_due=Decimal("125.00"),
+            currency="USD",
+            status="CURRENT",
         )
+        self.db.add(self.obligation)
+        self.db.flush()
 
-        self.second_obligation = self.create_obligation(self.customer.id, "OBL-ASSIST-2", days_ahead=15)
+        self.assistance_option = AssistanceOption(
+            obligation_id=self.obligation.id,
+            reschedule_eligible=True,
+            earliest_new_date=date(2026, 9, 20),
+            latest_new_date=date(2026, 9, 30),
+            unemployment_insurance_active=False,
+            insurance_instructions="",
+        )
+        self.db.add(self.assistance_option)
 
-        self.no_options_obligation = self.create_obligation(self.customer_without_options.id, "OBL-NO-OPTIONS", days_ahead=5)
+        # Segunda obligación del mismo cliente, sin opciones configuradas: sirve
+        # para comprobar que obligation_ref selecciona la obligación correcta.
+        self.second_obligation = self.create_obligation(self.customer, "OBL-ASSIST-2", days_ahead=15)
 
-        self.insurance_obligation = self.create_obligation(self.insurance_customer.id, "OBL-INSURANCE", days_ahead=9)
+        self.no_options_obligation = Obligation(
+            customer_id=self.customer_without_options.id,
+            external_ref="OBL-NO-OPTIONS",
+            product_type="credit_card",
+            next_due_date=datetime.now(ZoneInfo(self.customer_without_options.timezone)).date() + timedelta(days=5),
+            amount_due=Decimal("80.00"),
+            currency="USD",
+            status="CURRENT",
+        )
+        self.db.add(self.no_options_obligation)
+
+        # Cliente cuyo único beneficio activo es el seguro de desempleo.
+        self.insurance_obligation = self.create_obligation(self.insurance_customer, "OBL-INSURANCE", days_ahead=9)
         self.db.add(
             AssistanceOption(
                 obligation_id=self.insurance_obligation.id,
@@ -72,7 +96,8 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         customer = Customer(
             external_ref=external_ref,
             preferred_name=name,
-            dob="1991-04-12",
+            dob_hash=hash_dob("1991-04-12"),
+            birth_year=1991,
             timezone="America/El_Salvador",
             language="es",
             segment="test",
@@ -82,12 +107,13 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         self.db.flush()
         return customer
 
-    def create_obligation(self, customer_id: str, external_ref: str, days_ahead: int) -> Obligation:
+    def create_obligation(self, customer: Customer, external_ref: str, days_ahead: int) -> Obligation:
         obligation = Obligation(
-            customer_id=customer_id,
+            customer_id=customer.id,
             external_ref=external_ref,
             product_type="loan",
-            next_due_date=date.today() + timedelta(days=days_ahead),
+            # Día calendario del cliente, no el reloj del servidor.
+            next_due_date=datetime.now(ZoneInfo(customer.timezone)).date() + timedelta(days=days_ahead),
             amount_due=Decimal("125.00"),
             currency="USD",
             status="CURRENT",
@@ -101,7 +127,7 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         return response.status_code, response.json()
 
     def test_valid_token_authorizes_request(self) -> None:
-        token = retell.issue_verification_token(self.customer.id)
+        token = retell.issue_verification_token(self.db, self.customer.id)
         status_code, body = self.post_assistance(
             {"customer_ref": self.customer.id, "verification_token": token}
         )
@@ -118,7 +144,7 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         self.assertEqual(body, {"authorized": False, "options": []})
 
     def test_token_for_other_customer_returns_unauthorized_response(self) -> None:
-        token = retell.issue_verification_token(self.other_customer.id)
+        token = retell.issue_verification_token(self.db, self.other_customer.id)
         status_code, body = self.post_assistance(
             {"customer_ref": self.customer.id, "verification_token": token}
         )
@@ -133,7 +159,7 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         self.assertEqual(body, {"authorized": False, "options": []})
 
     def test_args_wrapper_format_works(self) -> None:
-        token = retell.issue_verification_token(self.customer.id)
+        token = retell.issue_verification_token(self.db, self.customer.id)
         status_code, body = self.post_assistance(
             {"args": {"customer_ref": self.customer.id, "verification_token": token}}
         )
@@ -144,7 +170,7 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         self.assertEqual(len(body["options"]), 1)
 
     def test_only_active_options_are_listed_with_approved_text(self) -> None:
-        token = retell.issue_verification_token(self.customer.id)
+        token = retell.issue_verification_token(self.db, self.customer.id)
         _, body = self.post_assistance({"customer_ref": self.customer.id, "verification_token": token})
 
         self.assertEqual(len(body["options"]), 1)
@@ -154,7 +180,7 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         self.assertIn("30 de septiembre de 2026", option["text"])
 
     def test_insurance_only_customer_gets_insurance_option_with_instructions(self) -> None:
-        token = retell.issue_verification_token(self.insurance_customer.id)
+        token = retell.issue_verification_token(self.db, self.insurance_customer.id)
         _, body = self.post_assistance(
             {"customer_ref": self.insurance_customer.id, "verification_token": token}
         )
@@ -170,7 +196,7 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         )
 
     def test_obligation_ref_selects_specific_obligation(self) -> None:
-        token = retell.issue_verification_token(self.customer.id)
+        token = retell.issue_verification_token(self.db, self.customer.id)
         _, body = self.post_assistance(
             {
                 "customer_ref": self.customer.id,
@@ -183,7 +209,7 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
         self.assertEqual(body, {"authorized": True, "options": []})
 
     def test_response_does_not_return_verification_token(self) -> None:
-        token = retell.issue_verification_token(self.customer.id)
+        token = retell.issue_verification_token(self.db, self.customer.id)
         _, body = self.post_assistance({"customer_ref": self.customer.id, "verification_token": token})
 
         self.assertNotIn("verification_token", body)
@@ -191,7 +217,7 @@ class GetAssistanceOptionsEndpointTests(unittest.TestCase):
             self.assertNotIn("verification_token", option)
 
     def test_valid_customer_without_options_returns_empty_options(self) -> None:
-        token = retell.issue_verification_token(self.customer_without_options.id)
+        token = retell.issue_verification_token(self.db, self.customer_without_options.id)
         status_code, body = self.post_assistance(
             {"customer_ref": self.customer_without_options.id, "verification_token": token}
         )

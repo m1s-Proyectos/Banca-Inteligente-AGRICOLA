@@ -2,13 +2,16 @@ import asyncio
 import unittest
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
-from app.db.base import Base
-from app.models import CallJob, Campaign, Customer, Obligation
-from app.services.retell import build_dynamic_variables, create_retell_call
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
+
+from app.core.security import hash_dob
+from app.db.base import Base
+from app.models import CallJob, Campaign, Customer, Obligation
+from app.services.retell import build_dynamic_variables, create_retell_call
 
 
 class CreateRetellCallGuardTests(unittest.TestCase):
@@ -32,7 +35,8 @@ class CreateRetellCallGuardTests(unittest.TestCase):
         self.customer = Customer(
             external_ref="CUS-GUARD",
             preferred_name="Maria",
-            dob="1990-01-01",
+            dob_hash=hash_dob("1990-01-01"),
+            birth_year=1990,
             timezone="America/El_Salvador",
             language="es",
             segment="test",
@@ -45,6 +49,11 @@ class CreateRetellCallGuardTests(unittest.TestCase):
         self.db.close()
         Base.metadata.drop_all(bind=self.engine)
         self.engine.dispose()
+
+    def today_for_customer(self) -> date:
+        # El guard de vencido compara contra el día calendario del cliente
+        # (America/El_Salvador), no contra UTC ni el reloj del servidor.
+        return datetime.now(ZoneInfo(self.customer.timezone)).date()
 
     def create_obligation(self, due_date: date) -> Obligation:
         obligation = Obligation(
@@ -73,7 +82,7 @@ class CreateRetellCallGuardTests(unittest.TestCase):
         return job
 
     def test_overdue_obligation_blocks_call(self) -> None:
-        obligation = self.create_obligation(date.today() - timedelta(days=1))
+        obligation = self.create_obligation(self.today_for_customer() - timedelta(days=1))
         job = self.create_job(obligation.id)
 
         call = asyncio.run(create_retell_call(self.db, job))
@@ -81,12 +90,13 @@ class CreateRetellCallGuardTests(unittest.TestCase):
         self.assertEqual(call.status, "BLOCKED")
         self.assertEqual(call.outcome, "BLOCKED_OVERDUE")
         self.assertEqual(job.status, "BLOCKED")
+        assert job.last_error is not None
         self.assertIn("vencida", job.last_error)
 
     def test_due_today_is_not_blocked_by_overdue_guard(self) -> None:
         # Vence hoy (dias_restantes = 0): el guardrail del guion permite el flujo.
         # Sin contacto primario se bloquea luego por consentimiento, no por vencido.
-        obligation = self.create_obligation(date.today())
+        obligation = self.create_obligation(self.today_for_customer())
         job = self.create_job(obligation.id)
 
         call = asyncio.run(create_retell_call(self.db, job))
@@ -94,7 +104,7 @@ class CreateRetellCallGuardTests(unittest.TestCase):
         self.assertEqual(call.outcome, "BLOCKED_BY_CONSENT")
 
     def test_future_obligation_reaches_consent_check(self) -> None:
-        obligation = self.create_obligation(date.today() + timedelta(days=7))
+        obligation = self.create_obligation(self.today_for_customer() + timedelta(days=7))
         job = self.create_job(obligation.id)
 
         call = asyncio.run(create_retell_call(self.db, job))
@@ -112,8 +122,11 @@ class CreateRetellCallGuardTests(unittest.TestCase):
         self.assertEqual(call.outcome, "BLOCKED_MISSING_CONTEXT")
 
     def test_dynamic_variables_follow_script_contract(self) -> None:
-        obligation = self.create_obligation(date.today() + timedelta(days=7))
-        days_remaining = (obligation.next_due_date - date.today()).days
+        # Un solo "hoy" para todo el test: si medianoche local cae entre líneas,
+        # days_remaining sigue siendo 7.
+        today = self.today_for_customer()
+        obligation = self.create_obligation(today + timedelta(days=7))
+        days_remaining = (obligation.next_due_date - today).days
 
         variables = build_dynamic_variables(self.customer, obligation, days_remaining)
 
@@ -125,8 +138,8 @@ class CreateRetellCallGuardTests(unittest.TestCase):
         self.assertEqual(variables["moneda"], "USD")
         self.assertEqual(variables["dias_restantes_pago"], "7")
         self.assertEqual(variables["nom_producto"], "loan")
-        # dob 1990-01-01: la edad es determinista sin importar el día del test.
-        self.assertEqual(variables["edad_cliente"], str(date.today().year - 1990))
+        # birth_year 1990: la edad es determinista sin importar el día del test.
+        self.assertEqual(variables["edad_cliente"], str(today.year - 1990))
         self.assertEqual(variables["language"], "es")
         self.assertEqual(variables["timezone"], "America/El_Salvador")
         # Compatibilidad con el contrato original.
