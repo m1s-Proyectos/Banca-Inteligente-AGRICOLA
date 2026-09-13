@@ -61,7 +61,7 @@ def build_retell_signature_digest(raw_body: bytes, timestamp: str, api_key: str)
 
 def verify_retell_signature(raw_body: bytes, signature: str | None) -> bool:
     if not signature:
-        return settings.fake_data_only
+        return settings.fake_data_only and not settings.retell_require_signature
     if not settings.retell_api_key:
         return False
 
@@ -75,7 +75,7 @@ def verify_retell_signature(raw_body: bytes, signature: str | None) -> bool:
         return False
 
     try:
-        timestamp_seconds = float(timestamp)
+        timestamp_seconds = float(timestamp) / 1000
     except ValueError:
         return False
 
@@ -222,8 +222,13 @@ def request_reschedule(
         return {"accepted": False, "reason": "invalid_request"}
 
     obligation = resolve_obligation(db, customer_ref, obligation_ref)
-    call = db.scalar(select(Call).where(Call.customer_id == customer_ref).order_by(Call.created_at.desc()).limit(1))
-    if not obligation or not call:
+    # La accion se cuelga de la llamada viva cuando Retell manda su call_id; solo
+    # si no lo manda se cae a la ultima llamada del cliente (ver nota en
+    # is_verification_token_valid).
+    call_id = resolve_internal_call_id(db, retell_call_id) or db.scalar(
+        select(Call.id).where(Call.customer_id == customer_ref).order_by(Call.created_at.desc()).limit(1)
+    )
+    if not obligation or not call_id:
         return {"accepted": False, "reason": "missing_context"}
 
     option = db.scalar(select(AssistanceOption).where(AssistanceOption.obligation_id == obligation.id))
@@ -241,7 +246,7 @@ def request_reschedule(
         }
 
     action = CustomerAction(
-        call_id=call.id,
+        call_id=call_id,
         obligation_id=obligation.id,
         type="RESCHEDULE_REQUEST",
         proposed_date=parsed_proposed_date,
@@ -332,6 +337,7 @@ async def create_retell_call(db: Session, job: CallJob) -> Call:
         "from_number": settings.retell_from_number,
         "to_number": contact.phone_e164,
         "override_agent_id": settings.retell_agent_id,
+        "override_agent_version": settings.retell_agent_version,
         "retell_llm_dynamic_variables": build_dynamic_variables(customer, obligation, days_remaining),
         "metadata": {"call_job_id": job.id, "customer_id": customer.id},
     }
@@ -352,6 +358,85 @@ async def create_retell_call(db: Session, job: CallJob) -> Call:
     db.commit()
     db.refresh(call)
     return call
+
+
+async def create_retell_web_call(db: Session, customer_id: str, obligation_id: str) -> dict[str, str]:
+    customer = db.get(Customer, customer_id)
+    obligation = db.get(Obligation, obligation_id)
+    contact = db.scalar(
+        select(CustomerContact).where(
+            CustomerContact.customer_id == customer_id,
+            CustomerContact.is_primary.is_(True),
+        )
+    )
+    if not customer or not obligation or obligation.customer_id != customer_id:
+        raise ValueError("Cliente u obligación inválidos")
+    if not contact or contact.do_not_call or contact.consent_status != "OPTED_IN":
+        raise ValueError("Cliente sin consentimiento o en lista no llamar")
+    if not settings.fake_data_only:
+        raise ValueError("La demostración web solo admite datos sintéticos")
+    if not settings.retell_api_key or not settings.retell_agent_id:
+        raise RuntimeError("Faltan credenciales Retell")
+
+    today = datetime.now(ZoneInfo(customer.timezone)).date()
+    days_remaining = (obligation.next_due_date - today).days
+    if days_remaining < 0:
+        raise ValueError("La obligación ya está vencida")
+
+    from app.services.dashboard import get_or_create_demo_campaign
+
+    job = CallJob(
+        campaign_id=get_or_create_demo_campaign(db).id,
+        customer_id=customer.id,
+        obligation_id=obligation.id,
+        scheduled_at=datetime.now(UTC),
+        status="CLAIMED",
+    )
+    db.add(job)
+    db.flush()
+    call = Call(call_job_id=job.id, customer_id=customer.id, status="REGISTERED", outcome="PENDING")
+    db.add(call)
+
+    payload = {
+        "agent_id": settings.retell_agent_id,
+        "agent_version": settings.retell_agent_version,
+        "retell_llm_dynamic_variables": build_dynamic_variables(customer, obligation, days_remaining),
+        "metadata": {"call_job_id": job.id, "customer_id": customer.id},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(
+                "https://api.retellai.com/v3/create-web-call",
+                json=payload,
+                headers={"Authorization": f"Bearer {settings.retell_api_key}"},
+            )
+            response.raise_for_status()
+            data = response.json()
+    except httpx.HTTPError:
+        call.status = "ERROR"
+        call.outcome = "WEB_CALL_CREATE_FAILED"
+        job.status = "FAILED"
+        job.last_error = "Retell rechazó la creación de la llamada web"
+        db.commit()
+        raise
+
+    call_id = data.get("call_id")
+    access_token = data.get("access_token")
+    if not isinstance(call_id, str) or not isinstance(access_token, str):
+        call.status = "ERROR"
+        call.outcome = "WEB_CALL_CREATE_FAILED"
+        job.status = "FAILED"
+        job.last_error = "Retell no devolvió call_id y access_token"
+        db.commit()
+        raise RuntimeError(job.last_error)
+
+    call.retell_call_id = call_id
+    # Nunca persistir el token efímero que permite entrar a la sala de audio.
+    call.raw_payload = {"call_id": call_id, "call_type": "web_call", "transport": data.get("transport")}
+    job.status = "SENT"
+    job.attempt_count = 1
+    db.commit()
+    return {"call_id": call_id, "access_token": access_token}
 
 
 def process_webhook(db: Session, raw_body: bytes, payload: dict[str, Any]) -> dict[str, Any]:

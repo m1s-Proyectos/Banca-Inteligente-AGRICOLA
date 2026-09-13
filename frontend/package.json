@@ -11,6 +11,7 @@
     "react": "latest",
     "react-dom": "latest",
     "recharts": "latest",
+    "retell-client-js-sdk": "^3.0.1",
     "typescript": "latest",
     "vite": "latest"
   },

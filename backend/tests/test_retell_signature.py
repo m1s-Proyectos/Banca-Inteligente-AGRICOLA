@@ -24,7 +24,7 @@ def encode_body(payload: dict) -> bytes:
 
 
 def retell_signature(raw_body: bytes, timestamp: int | None = None, secret: str = RETELL_TEST_SECRET) -> str:
-    timestamp_value = str(timestamp or int(time.time()))
+    timestamp_value = str(timestamp or int(time.time() * 1000))
     digest = hmac.new(
         secret.encode("utf-8"),
         raw_body + timestamp_value.encode("utf-8"),
@@ -37,8 +37,10 @@ class RetellSignatureTests(unittest.TestCase):
     def setUp(self) -> None:
         self.original_fake_data_only = retell.settings.fake_data_only
         self.original_retell_api_key = retell.settings.retell_api_key
+        self.original_retell_require_signature = retell.settings.retell_require_signature
         retell.settings.fake_data_only = False
         retell.settings.retell_api_key = RETELL_TEST_SECRET
+        retell.settings.retell_require_signature = True
 
         self.engine = create_engine(
             "sqlite://",
@@ -74,6 +76,7 @@ class RetellSignatureTests(unittest.TestCase):
         self.engine.dispose()
         retell.settings.fake_data_only = self.original_fake_data_only
         retell.settings.retell_api_key = self.original_retell_api_key
+        retell.settings.retell_require_signature = self.original_retell_require_signature
 
     def signed_post(self, url: str, payload: dict, signature: str | None = None):
         raw_body = encode_body(payload)
@@ -94,7 +97,7 @@ class RetellSignatureTests(unittest.TestCase):
 
     def test_expired_timestamp_is_rejected(self) -> None:
         raw_body = encode_body({"event": "call_started"})
-        expired_timestamp = int(time.time()) - retell.RETELL_SIGNATURE_TOLERANCE_SECONDS - 1
+        expired_timestamp = int((time.time() - retell.RETELL_SIGNATURE_TOLERANCE_SECONDS - 1) * 1000)
 
         self.assertFalse(retell.verify_retell_signature(raw_body, retell_signature(raw_body, expired_timestamp)))
 
@@ -106,6 +109,12 @@ class RetellSignatureTests(unittest.TestCase):
 
     def test_missing_header_is_rejected_when_validation_is_active(self) -> None:
         raw_body = encode_body({"event": "call_started"})
+
+        self.assertFalse(retell.verify_retell_signature(raw_body, None))
+
+    def test_missing_header_is_rejected_when_api_key_is_configured_for_demo(self) -> None:
+        raw_body = encode_body({"event": "call_started"})
+        retell.settings.fake_data_only = True
 
         self.assertFalse(retell.verify_retell_signature(raw_body, None))
 

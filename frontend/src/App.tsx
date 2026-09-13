@@ -5,6 +5,8 @@ import {
   CheckCircle2,
   Clock3,
   Headphones,
+  Mic,
+  PhoneOff,
   PhoneCall,
   RefreshCw,
   ShieldCheck,
@@ -12,6 +14,7 @@ import {
   TrendingUp,
   UsersRound
 } from "lucide-react";
+import { RetellWebClient } from "retell-client-js-sdk";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api, Call, CallJob, Customer, Summary } from "./lib/api";
 
@@ -29,11 +32,15 @@ const emptyState: LoadState = {
   calls: []
 };
 
+type WebCallStatus = "idle" | "connecting" | "live" | "ended";
+
 export function App() {
   const [data, setData] = useState<LoadState>(emptyState);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [webCallStatus, setWebCallStatus] = useState<WebCallStatus>("idle");
+  const retellWebClient = useMemo(() => new RetellWebClient(), []);
 
   const selectedCustomer = useMemo(
     () => data.customers.find((customer) => customer.id === selectedCustomerId) ?? data.customers[0],
@@ -57,13 +64,53 @@ export function App() {
   async function schedule(customer: Customer) {
     const obligation = customer.obligations[0];
     if (!obligation) return;
-    await api.schedule(customer.id, obligation.id);
-    await load();
+    setError(null);
+    try {
+      await api.schedule(customer.id, obligation.id);
+      await load();
+    } catch (currentError) {
+      setError(currentError instanceof Error ? currentError.message : "No se pudo programar la llamada");
+    }
+  }
+
+  async function startWebCall(customer: Customer) {
+    const obligation = customer.obligations[0];
+    if (!obligation) return;
+    setError(null);
+    setWebCallStatus("connecting");
+    try {
+      const call = await api.webCall(customer.id, obligation.id);
+      await retellWebClient.startCall({ accessToken: call.access_token });
+    } catch (currentError) {
+      setWebCallStatus("idle");
+      setError(currentError instanceof Error ? currentError.message : "No se pudo iniciar la llamada web");
+    }
   }
 
   useEffect(() => {
     void load();
   }, []);
+
+  useEffect(() => {
+    const started = () => setWebCallStatus("live");
+    const ended = () => {
+      setWebCallStatus("ended");
+      window.setTimeout(() => void load(), 1200);
+    };
+    const failed = (reason: unknown) => {
+      setWebCallStatus("idle");
+      setError(typeof reason === "string" ? reason : "Retell no pudo conectar el audio");
+    };
+    retellWebClient.on("call_started", started);
+    retellWebClient.on("call_ended", ended);
+    retellWebClient.on("error", failed);
+    return () => {
+      retellWebClient.off("call_started", started);
+      retellWebClient.off("call_ended", ended);
+      retellWebClient.off("error", failed);
+      retellWebClient.stopCall();
+    };
+  }, [retellWebClient]);
 
   const chartData = [
     { name: "Pendientes", value: data.summary?.pending_jobs ?? 0 },
@@ -176,10 +223,40 @@ export function App() {
                     </dd>
                   </div>
                 </dl>
-                <button onClick={() => void schedule(selectedCustomer)} disabled={loading || selectedCustomer.do_not_call}>
-                  <PhoneCall size={17} />
-                  Programar llamada
-                </button>
+                <div className="callActions">
+                  {webCallStatus === "live" ? (
+                    <button className="endCall" onClick={() => retellWebClient.stopCall()}>
+                      <PhoneOff size={17} />
+                      Finalizar llamada
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => void startWebCall(selectedCustomer)}
+                      disabled={loading || selectedCustomer.do_not_call || webCallStatus === "connecting"}
+                    >
+                      <Mic size={17} />
+                      {webCallStatus === "connecting" ? "Conectando con Sofía…" : "Iniciar llamada web"}
+                    </button>
+                  )}
+                  {webCallStatus === "live" && (
+                    <button className="audioButton" onClick={() => void retellWebClient.startAudioPlayback()}>
+                      Activar audio
+                    </button>
+                  )}
+                  <button
+                    className="audioButton"
+                    onClick={() => void schedule(selectedCustomer)}
+                    disabled={loading || selectedCustomer.do_not_call || webCallStatus === "live"}
+                  >
+                    <PhoneCall size={17} />
+                    Programar llamada telefónica
+                  </button>
+                </div>
+                <p className="callStatus" role="status">
+                  {webCallStatus === "live"
+                    ? "Llamada activa. Use su micrófono y altavoces."
+                    : "Llamada web: WebRTC del navegador, sin SIP trunk. La llamada telefónica encola un trabajo para el worker."}
+                </p>
               </div>
             ) : (
               <p className="muted">Ejecuta el seed para cargar clientes.</p>

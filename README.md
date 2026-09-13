@@ -47,30 +47,75 @@ npm run dev -- --host 127.0.0.1
 
 ## Retell
 
-Configurar el tunel HTTPS hacia `http://localhost:8000` y registrar:
+Agente: **Sofía — Recordatorio Preventivo** (`agent_270ec9df7856155ae90bbcc096`, conversation flow,
+versión publicada `1`). Su configuración en Retell ya apunta al backend de Render:
 
-- `POST /api/v1/retell/webhooks`
-- `POST /api/v1/retell/tools/verify-identity`
-- `POST /api/v1/retell/tools/get-assistance-options`
-- `POST /api/v1/retell/tools/request-reschedule`
+| Retell | URL |
+| --- | --- |
+| Webhook del agente | `POST https://banca-inteligente.onrender.com/api/v1/retell/webhooks` |
+| Tool `verify-identity` | `POST .../api/v1/retell/tools/verify-identity` |
+| Tool `get-assistance-options` | `POST .../api/v1/retell/tools/get-assistance-options` |
+| Tool `request-reschedule` | `POST .../api/v1/retell/tools/request-reschedule` |
 
-El worker solo llama a numeros incluidos en `RETELL_ALLOWED_TEST_NUMBERS`.
+Los dos sentidos de la integración:
+
+- **Backend → Retell.** El worker toma un `CallJob` pendiente dentro de la ventana hábil y llama a
+  `POST /v2/create-phone-call` con `override_agent_id` + `override_agent_version` y las variables
+  dinámicas del cliente. Solo marca números presentes en `RETELL_ALLOWED_TEST_NUMBERS`; sin
+  `RETELL_FROM_NUMBER` el trabajo queda `SIMULATED` en vez de llamar.
+- **Retell → Backend.** Durante la llamada el agente invoca las tools de arriba y, al terminar,
+  Retell manda `call_started` / `call_ended` / `call_analyzed` al webhook. Retell firma **webhooks y
+  tool calls** con `X-Retell-Signature` (`v=<ms>,d=<hmac-sha256(body+ts, api_key)>`); con
+  `RETELL_REQUIRE_SIGNATURE=true` el backend rechaza cualquier petición sin firma válida.
+
+### Demo por web call (sin SIP trunk)
+
+No hace falta número ni troncal SIP: el panel abre la llamada por WebRTC desde el navegador.
+
+1. En el panel, elegir un cliente y pulsar **Iniciar llamada web**.
+2. El backend crea el `CallJob` + `Call`, pide `POST /v3/create-web-call` a Retell y devuelve
+   `call_id` y `access_token`. El token es efímero y nunca se persiste.
+3. `retell-client-js-sdk` conecta el audio del navegador con ese token; el agente habla y llama a las
+   tools contra el mismo backend.
+4. Al colgar, el webhook cierra el ciclo y el panel refresca resultados y transcripción.
+
+`POST /api/v1/retell/web-calls` solo responde con `FAKE_DATA_ONLY=true` y tiene un cooldown global de
+10 s para que la demo pública no gaste créditos de Retell.
+
+El botón **Programar llamada telefónica** sigue disponible y ejercita el camino del worker.
 
 ## Deploy
 
-### Render
+### Render (API + worker)
 
-`render.yaml` defines Postgres, the FastAPI service, the call worker, and the static dashboard.
+Servicio en producción: <https://banca-inteligente.onrender.com> (`srv-daj2vt15efls73fdc04g`,
+rama `main`, autodeploy por commit) con Postgres `banca-inteligente-db` en plan free.
 
-1. In the [Render Dashboard](https://dashboard.render.com/), create a Blueprint from this repo (`m1s-Proyectos/Banca-Inteligente-AGRICOLA`).
-2. Set the API secrets when prompted: `RETELL_API_KEY`, `RETELL_AGENT_ID`, `RETELL_FROM_NUMBER`, `RETELL_ALLOWED_TEST_NUMBERS`.
-3. After the API has a public URL, set the dashboard `VITE_API_URL` to `https://<api-host>/api/v1` and add that origin to `CORS_ORIGINS` / `cors_origins` if the panel cannot call the API.
-4. Point Retell webhooks at `https://<api-host>/api/v1/retell/webhooks` (and the tool URLs).
+Variables de entorno del servicio:
 
-Postgres uses `basic-256mb` (paid; the workspace needs a payment method). The API, worker, and static site stay on the free instance type.
+| Clave | Valor |
+| --- | --- |
+| `DATABASE_URL` | cadena interna de `banca-inteligente-db` |
+| `RETELL_API_KEY` | *secreto* (la misma clave con la que Retell firma) |
+| `RETELL_AGENT_ID` | `agent_270ec9df7856155ae90bbcc096` |
+| `RETELL_AGENT_VERSION` | `1` |
+| `RETELL_REQUIRE_SIGNATURE` | `true` |
+| `RUN_WORKER_IN_WEB` | `true` |
+| `FAKE_DATA_ONLY` | `true` |
+| `RETELL_FROM_NUMBER` / `RETELL_ALLOWED_TEST_NUMBERS` | vacíos mientras no haya SIP trunk |
 
-Validate locally (Render CLI already authenticated):
+En plan free no hay un servicio `worker` aparte: con `RUN_WORKER_IN_WEB=true` el bucle del worker
+corre como tarea del lifespan de FastAPI, en el mismo proceso que la API. Al contratar un plan de
+pago, poner la variable en `false` y levantar el worker con `python -m app.worker.runner`.
+
+`render.yaml` describe esa topología para recrearla desde cero. Validar con:
 
 ```bash
 render blueprints validate
 ```
+
+### Vercel (panel)
+
+Panel en <https://banca-inteligente-one.vercel.app> con
+`VITE_API_URL=https://banca-inteligente.onrender.com/api/v1`. Ese origen ya está en `cors_origins`
+del backend.
