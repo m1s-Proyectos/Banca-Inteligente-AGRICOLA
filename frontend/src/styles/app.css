@@ -98,21 +98,24 @@ nav {
   gap: 7px;
 }
 
-nav a {
+.navItem {
   color: #D8DCE3;
   padding: 12px 13px;
+  border: 0;
   border-radius: 8px;
-  text-decoration: none;
+  background: transparent;
+  text-align: left;
   font-weight: 600;
+  cursor: pointer;
   transition: background 140ms ease, color 140ms ease;
 }
 
-nav a:hover {
+.navItem:hover {
   background: rgba(255, 255, 255, 0.08);
   color: var(--white);
 }
 
-nav a.active {
+.navItem.active {
   background: var(--yellow);
   color: var(--graphite);
   font-weight: 800;
@@ -583,4 +586,200 @@ small,
   .tables {
     grid-template-columns: 1fr;
   }
+}
+
+/* --- Tablas de datos (Clientes, Cola, Retell) --- */
+
+.tableScroll {
+  overflow-x: auto;
+}
+
+.dataTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.dataTable th {
+  padding: 10px 12px;
+  text-align: left;
+  white-space: nowrap;
+  color: var(--gray-500);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--gray-200);
+}
+
+.dataTable td {
+  padding: 12px;
+  vertical-align: top;
+  border-bottom: 1px solid var(--gray-100);
+}
+
+.dataTable td strong {
+  display: block;
+  color: var(--graphite);
+  font-weight: 750;
+}
+
+.dataTable td small {
+  display: block;
+  margin-top: 3px;
+}
+
+.dataTable tbody tr {
+  transition: background 140ms ease;
+}
+
+.dataTable tbody tr[class] {
+  cursor: pointer;
+}
+
+.dataTable tbody tr:hover {
+  background: #FBFCFE;
+}
+
+.dataTable tr.selectedRow {
+  background: var(--blue-soft);
+  box-shadow: inset 4px 0 0 var(--yellow);
+}
+
+.urgent {
+  color: var(--danger);
+  font-weight: 800;
+}
+
+.errorCell {
+  color: var(--danger);
+  max-width: 320px;
+}
+
+.dataTable code {
+  display: block;
+  max-width: 360px;
+  overflow-x: auto;
+  color: var(--gray-700);
+  font-size: 12px;
+}
+
+/* --- Detalle de obligaciones --- */
+
+.obligationGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+}
+
+.obligationCard {
+  padding: 14px;
+  border: 1px solid var(--gray-100);
+  border-radius: 8px;
+  background: #FBFCFE;
+}
+
+.obligationCard header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.obligationCard header strong {
+  color: var(--graphite);
+  font-weight: 800;
+}
+
+.obligationCard dt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.obligationCard dl div {
+  padding: 7px 0;
+}
+
+.inlineWarning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 214, 0, 0.55);
+  border-radius: 8px;
+  background: rgba(255, 214, 0, 0.14);
+  color: var(--gray-700);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* --- Detalle de llamadas --- */
+
+.callList {
+  display: grid;
+  gap: 12px;
+}
+
+.callDetail {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--gray-100);
+  border-radius: 8px;
+  background: #FBFCFE;
+}
+
+.callDetail header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.callDetail header strong {
+  display: block;
+  color: var(--graphite);
+  font-weight: 750;
+}
+
+.badgeRow {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.callDetail p {
+  color: var(--gray-700);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.callDetail audio {
+  width: 100%;
+  height: 36px;
+}
+
+.callDetail summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: var(--blue);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.callDetail pre {
+  margin: 10px 0 0;
+  padding: 12px;
+  max-height: 280px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--gray-50);
+  color: var(--gray-700);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
 }
