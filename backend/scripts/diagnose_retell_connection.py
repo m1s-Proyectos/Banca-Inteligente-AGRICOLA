@@ -7,7 +7,6 @@ import httpx
 
 from app.core.config import settings
 
-
 RETELL_API_BASE_URL = "https://api.retellai.com"
 
 

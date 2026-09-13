@@ -1,20 +1,19 @@
 import unittest
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.core.security import hash_dob
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
-from app.models import Customer
-from app.services import retell
+from app.models import Customer, VerificationToken
 
 
 class VerifyIdentityEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
-        retell._verification_tokens.clear()
         self.engine = create_engine(
             "sqlite://",
             connect_args={"check_same_thread": False},
@@ -25,7 +24,8 @@ class VerifyIdentityEndpointTests(unittest.TestCase):
         self.customer = Customer(
             external_ref="CUS-HTTP",
             preferred_name="Maria",
-            dob="1991-04-12",
+            dob_hash=hash_dob("1991-04-12"),
+            birth_year=1991,
             timezone="America/El_Salvador",
             language="es",
             segment="test",
@@ -101,7 +101,7 @@ class VerifyIdentityEndpointTests(unittest.TestCase):
         _, body = self.post_verify({"customer_ref": self.customer.id, "supplied_dob": "1990-01-01"})
 
         self.assertIsNone(body["verification_token"])
-        self.assertEqual(retell._verification_tokens, {})
+        self.assertEqual(self.db.scalar(select(func.count(VerificationToken.id))), 0)
 
 
 if __name__ == "__main__":
